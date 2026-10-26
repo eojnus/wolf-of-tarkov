@@ -42,6 +42,8 @@ features/      业务模型与纯计算（只认识自己的切片）
   city-statistics 经营产出登记、基础 GDP、连续全市场指数窗（纯计算）
   city-development 建设门槛、阶段预留、项目与永久建设历史（不建 Three.js 对象）
   city-layout  逻辑地图：边界、道路、地块、建筑与稳定标识（无 Three.js / DOM / 结算）
+  real-estate  产权、入住、挂牌、AI 土地报价与成交记录（不保存余额）
+  housing      收入群组的家庭数、居住分配、购房意愿与住房压力（不保存余额与人口权威）
   banking / employment / living / loan / business-ai
 
 app/           跨模块协调：命令、模拟、查询、视图
@@ -68,6 +70,11 @@ app/           跨模块协调：命令、模拟、查询、视图
   city-development.ts    选举后建设判断、项目完成落地、招商槽位挑选
   city-enterprises.ts    运行时真实 AI 招商与创建（严禁走开局种子路径）
   city-view.ts           城市经济面板的只读视图
+  residence.ts           永久居住权与月度应缴报价的唯一口径
+  real-estate.ts         房地产播种、付款与产权转移的唯一写入入口
+  real-estate-commands.ts 房地产玩家命令（买入、挂牌、撤销、接受/拒绝报价）
+  real-estate-view.ts    住房与土地面板的只读视图
+  housing-simulation.ts  住房月结：收入/消费、需求、匹配成交、AI 投资与指标固化
 
 infrastructure/ 存档
   storage.ts        入口：槽位读写、快照、导入导出、读档编排
@@ -96,7 +103,7 @@ world/         Three.js 场景、角色与控制
 clock · finance · living · loan · employment · population · politics · elections ·
 government · enterprises · technology · talent · businessAi · equity · securities ·
 financing · governance · promotion · cityStatistics · cityLayout · cityDevelopment ·
-settings · world · reports · settlement
+realEstate · housing · settings · world · reports · settlement
 ```
 
 | 数据 | 权威来源 | 说明 |
@@ -179,7 +186,8 @@ i 汇总关键事件，决定是否停止本次跳时
 2 到期旧建设项目先完成
 3 固化本月经营产出统计与全市场指数窗口（旧窗口先固化再重建，不丢涨跌）
 4 人口月结（经营观察 + 市场回报 → 阶层流动）
-5 12 群体满意度更新（引用第 4 步同一份真实经济摘要）
+4.5 住房月结（家庭数同步 → 收入/消费入账 → 需求 → 匹配成交 → 指标固化）
+5 12 群体满意度更新（引用第 4 步同一份真实经济摘要 + 第 4.5 步住房压力）
 6 提前选举条件检查（保护期/连续月计数/每任期一次）
 7 到期选举、真实新任期与属性切换（零票重选不建任期）
 8 本任期唯一一次建设判断（只读已结算正式 GDP）
@@ -465,3 +473,72 @@ G(t)    = G0 + P(t) + S(t)
 新增 `cityStatistics`、`cityLayout`、`cityDevelopment` 三个切片，并把 `politics` 换成 12 群体、
 `government` 任期补方向/效果快照/来源与 `offices`、`world.revision` 升到 3。迁移规则见
 `docs/contracts.md` 第二十四节；读档不重算 G0、不重复链结指数、不重建公司、不重复建设。
+
+## 14. 房地产与宏观住房（v17）
+
+### 14.1 三个切片的职责
+
+| 切片 / 模块 | 负责 | 不负责 |
+| --- | --- | --- |
+| `features/real-estate` | 产权、入住、挂牌、AI 土地报价、成交记录与玩家已实现价差 | 不保存余额、不算需求、不写满意度 |
+| `features/housing` | 3 个收入群组的家庭数、居住分配、购房意愿、负担能力与住房压力（纯计算） | 不保存余额、不保存第二份人口、不读写房产 |
+| `app/real-estate` / `app/housing-simulation` | 付款与产权转移的唯一写入、月度收入/消费/匹配/成交编排 | 不读 DOM、不建 Three.js 对象 |
+
+`app/residence.ts` 是「永久居住权 → 月度应缴」的唯一口径：月结与界面都读它，
+免租在**报价**环节生效，不做事后返款。
+
+### 14.2 产权、入住与保护期
+
+- 产权主体只有三种：`player`、`household`（群组 id）、`investor`（`finance` 的 investor 主体）。
+  非玩家主体都有真实余额与流水，不用无余额的 `external` 冒充买地买房的资金来源。
+- 入住状态与产权正交：`free-residence`（玩家永久居住权，非玩家产权）、`owner-occupied`（居民自住）、
+  `vacant`（空置，含玩家与 AI 持有）。产权变更不会自动改变玩家居住地点。
+- 保护期只对**未售新住宅**有效：`firstSoldAtMinute === null` 且 `now < protectionUntilMinute`。
+  开局 99 套用「开局第 7 个月月初」的绝对时刻（旧档迁移不会重新获得整段保护）；
+  新区住宅从交付时刻起算 180 游戏日。土地不适用保护期。
+
+### 14.3 资金与成交
+
+```
+玩家买住宅/土地：个人银行存款 → 卖方主体   （类别 home-purchase / land-purchase，不计个人收支）
+玩家卖住宅/土地：买方主体 → 个人银行存款   （类别 home-sale / land-sale，不计个人收支）
+居民买住宅：群组账户 → 卖方主体            （群组储蓄真实扣除）
+AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − 预留」限制）
+```
+
+- 成交只有一份写入实现 `app/real-estate.executePurchase`：同一份草稿里先划款、再改产权与挂牌、
+  再写成交记录；任一步失败整份回滚，不会留下双重产权或部分入住。
+- 挂牌价与版本号一起校验：界面确认过的价格/版本变化即 `PRICE_CHANGED` / `LISTING_CHANGED`。
+- AI 土地报价用 `reserveFunds(..., ref = offerId)` 承诺资金，接受时只消费该单据；
+  过期（日界）或拒绝必须释放预留，且同一地块同时只有一份有效报价。
+- 已实现价差 = 成交价 − 成本基础（`costBasisCents`）；未实现部分只看参考估值，
+  两者分开，净资产只把物业估值计入一次。
+
+### 14.4 宏观居民与住房市场
+
+- 家庭数 = `floor(阶层人数 ÷ 家庭规模)`，每月随人口月结同步；人口仍是唯一权威。
+- 群组资金是 `finance` 的 `household:<id>` 主体账户，本切片不保存余额副本。
+  收入是**配置的宏观外部输入**，不从企业工资额重复注入；单据 id 含月份，重复推进不重复入账。
+- 居住分配互斥：`ownedHouseholds` + 租住 = 家庭数；购房意愿是独立维度（租住家庭可以有首次购房意愿）。
+- 购买力受三个约束取小：意愿存量、群组内储蓄档位分布（只有倍数够的那部分家庭有购买力）、
+  群组账户真实储蓄；另有「房价 ≤ 家庭年收入 × 可负担倍数」的整组门槛。
+  平均储蓄不能让所有家庭同时被判定有购买力。
+- 月度匹配：群组轮换起点（`monthIndex % 群组数`）+ 户型偏好 + 单价升序，
+  每次成交都重新校验资金、需求、产权与保护期；不设「每月必卖 N 套」。
+- 改善置换：买新房后旧房释放为空置并挂牌，家庭始终只算一套自住；旧房真正卖出才产生资金流入。
+- 住房压力 `H ∈ [0,1]`（0.5 中性）由房价/收入比与未满足意愿算出，按收入阶层映射进
+  政治满意度公式的 `−12 × (H − 0.5)` 项；没有当月样本时中性。
+- 界面不展示群组家庭数、资金池、购买力档位、匹配算法或内部区域参数。
+
+### 14.5 与城市建设的衔接
+
+- 建设完成时由 `app/city-development.deliverDistrictHousing` 按真实布局把住宅单元交付一次，
+  幂等（按建筑 id 判重），读档与重复推进不会重复交房；旧档迁移为已完成的住房新区补齐单元。
+- 交付**不**登记 GDP、不发钱、不改变人口；住宅交付本身不叠加新的 GDP 产出。
+- 房地产估值、成交与宏观储蓄注入都不进入 `cityStatistics`；股票仍只通过 `S(t)` 进入 GDP。
+- 公共新区的建设用地不进入交易：储备土地是独立的地块记录，拒售不会阻塞城市扩张。
+
+### 14.6 存档 v16 → v17
+
+新增 `realEstate`、`housing` 与 `finance` 的 `household` 主体账户、6 个新流水类别。
+迁移规则见 `docs/contracts.md` 第二十五节；读档不重复注资、不重复发房、不重写历史月报。

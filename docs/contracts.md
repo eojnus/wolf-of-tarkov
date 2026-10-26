@@ -71,7 +71,10 @@ type AccountOwner = 'personal' | 'business' | 'investor' | 'market' | 'external'
 interface AccountRef { readonly owner: AccountOwner; readonly id: string }
 ```
 
-- `personal` / `business` / `investor` / `market` 是有真实余额的资金主体；`external` 只表示无余额的系统外部对手方。
+- `personal` / `business` / `investor` / `market` / `household` 是有真实余额的资金主体；
+  `external` 只表示无余额的系统外部对手方。
+- `household` 是宏观居民群组账户（id = 群组 id），余额在 `subjectAccounts['household:<id>']`；
+  它没有资金预留语义（预留只属于 `investor` / `market`）。
 - 个人只有 `personal.cash` 与 `personal.savings`；外部对手方 id 包括 `employer` / `landlord` /
   `utilities` / `creditor` / `opening` / `market` / `lender` / `customer` / `supplier` / `staff` /
   `advertiser` / `operator` / `investor` / `tax`。
@@ -96,6 +99,8 @@ interface AccountRef { readonly owner: AccountOwner; readonly id: string }
 | `salary` / `rent` / `living` / `debt-repayment` / `loan-interest` | 是 |
 | `initial` / `deposit` / `withdrawal` | 否（开局与内部转移） |
 | `stock-buy` / `stock-sell` / `loan-drawdown` / `loan-principal` | 否（资产 / 负债形态转换） |
+| `home-purchase` / `home-sale` / `land-purchase` / `land-sale` | 否（资金 ↔ 物业形态转换） |
+| `housing-income` / `housing-consumption` | 否（宏观居民收支，个人月报不涉及） |
 
 ## 四、业务接口
 
@@ -131,7 +136,8 @@ interface AccountRef { readonly owner: AccountOwner; readonly id: string }
 
 ## 五、月度结算
 
-八步顺序（`app/monthly.ts`），不变：
+八步顺序（`app/monthly.ts`），不变（房租按 `app/residence.monthChargeOf` 报价，
+永久居住权为 0）：
 
 1. 结清上月工资应计 → 2. 发薪到现金 → 3. 偿还旧生活欠款 → 4. 扣房租 → 5. 扣生活费 →
 6. 差额分别记生活欠款 → 7. 生成月报 → 8. 记录已结算月份。
@@ -212,9 +218,13 @@ interface SaveSnapshot {
 
 ```
 企业账面权益 = 企业现金 − 企业应付费用（应付工资 + 应付经营费用）
-个人净资产 = 现金 + 银行存款 + 未发工资 + 股票市值 + 企业账面权益
+个人净资产 = 现金 + 银行存款 + 未发工资 + 股票市值 + 企业账面权益 + 持有物业估值
              − 生活欠款 − 未偿贷款本息
 ```
+
+- 持有物业估值只计玩家**产权**持有的住宅与土地（参考估值合计），只计一次；
+  永久居住权不属于玩家产权，因此不计入净资产，也不产生房租。
+- 房地产买卖不计入个人收支：买入是现金转资产，卖出是实现价差与资产互换。
 
 - 企业权益只计一次，不再额外重复加企业现金。
 - 已清算的公司不计入权益；未清偿部分不追索玩家个人资金。
@@ -1025,9 +1035,12 @@ G(t) = G0 + P(t) + S(t)
 ### 22.2 满意度
 
 ```
-T   = clamp(50 + 10M + 15E − 25P − 10C + 10D, 0, 100)
+T   = clamp(50 + 10M + 15E − 25P − 10C + 10D − 12×(H − 0.5), 0, 100)
 S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100）
 ```
+
+- `H`（住房压力，0～1，0.5 中性）来自住房模型固化的**当月**指标，按群体所属收入阶层取值；
+  当月没有住房样本时按中性处理。它不读取玩家个人收支，也不是「全城生活成本」C。
 
 - `M`：当前执政方向与群体利益的政策匹配（`content/politics` 的 `match`，[-1,1]）；
   过渡负责人 M=0。`E = clamp(0.6×rawJ + 0.4×rawI, −1, 1)`；`P = clamp(rawP, 0, 1)`。
@@ -1183,3 +1196,77 @@ S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100�
     不释放已用阶段、不删除完成历史。
 - 当前版本字段损坏明确拒绝，不任意补默认值；读档不重算 G0、不重复链结指数、
   不重建公司、不重复建设。
+
+## 二十五、房地产与住房契约（v17）
+
+### 25.1 切片与权威
+
+| 数据 | 权威来源 | 说明 |
+| --- | --- | --- |
+| 产权 | `realEstate.properties[*].owner` | `player` / `household:<groupId>` / `investor:<id>` |
+| 入住 | `realEstate.properties[*].occupancy` | `free-residence` / `owner-occupied` / `vacant`；土地为 null |
+| 挂牌 | `realEstate.properties[*].listing` | 价格 + 版本 + 挂牌时刻；土地不能挂牌 |
+| 土地报价 | `realEstate.offers` | 有期限，资金按 `investor:<id>::<offerId>` 预留 |
+| 成交与已实现价差 | `realEstate.trades` / `realizedCents` | 只保留最近 240 条；累计值不受裁剪影响 |
+| 居民家庭与居住分配 | `housing.groups[*]` | 家庭数由 `population.classes` 派生；自有/租住互斥 |
+| 居民群组资金 | `finance.subjectAccounts['household:<id>']` | 住房切片不保存余额副本 |
+
+- 永久居住权必须且只能有一处（`home-001`）：产权属于非玩家主体，`freeResidenceFor = 'player'`，
+  不计入个人净资产，不产生房租，不可出售、不可出租。
+- 晴川公寓固定 100 套（1 套居住权 + 99 套可售）；新区住宅按配置的单元计划交付。
+
+### 25.2 成交与资金
+
+- 唯一写入入口 `app/real-estate.executePurchase`，在同一份草稿里完成：
+  校验资产/买卖双方/保护期/价格与版本 → 划款（`transferFunds` 或 `transferReservedFunds`）
+  → 清空该资产全部报价（各自释放预留）→ 产权与入住转移 → 挂牌关闭 → 成交记录。
+- 玩家买入用个人银行存款，全款支付；首版没有按揭、没有过桥贷款。
+- 价格或挂牌版本与玩家确认过的不一致时 **明确拒绝**（`PRICE_CHANGED` / `LISTING_CHANGED`），
+  不静默换价、不缩量、不换资产。
+- 居民与 AI 在保护期内不能买入未售新住宅；玩家在保护期内可以买（保护期即玩家优先窗口）。
+- 玩家持有的住宅挂牌后由月度市场匹配成交（居民与 AI 都是真实买家），
+  没有保底回收、没有即时卖出；价格过高可以长期无人问津。
+
+### 25.3 宏观居民与住房市场
+
+- 家庭数 `= floor(阶层人数 ÷ 家庭规模)`；每月在人口月结之后同步，人口仍是唯一权威。
+- 群组收入与消费是**宏观外部输入**（配置的户均金额 × 家庭数），单据 id 为
+  `housing-income:<monthKey>:<groupId>` / `housing-consume:<monthKey>:<groupId>`；
+  同一月份重复推进不会重复入账（先判 `housing.lastSettledMonthKey`，财务侧再判重）。
+- 群组支出上限是「余额 − 预留」中的余额本身（群组没有预留）；不允许透支。
+- 购买力 = min(意愿存量, 储蓄档位内可负担家庭数, 群组储蓄 ÷ 房价)，
+  并要求房价 ≤ 家庭年收入 × 配置倍数；到达上限后不再成交。
+- 月度成交上限：每群组 6 套、全市场 12 套（叠加在需求/资金/供给约束之上）。
+- 改善置换：买新房后旧房立即释放为空置并挂牌；卖出前不产生资金流入，也不把家庭算作两套自住。
+- 住房压力：`gap = clamp((房价/年收入 − 舒适倍数) ÷ 舒适倍数, −1, 1)`，
+  `H = clamp(0.5 + 0.5×gap + 0.4×未满足意愿占比, 0, 1)`。
+
+### 25.4 建设交付与统计隔离
+
+- 住房新区完成时交付住宅单元一次（按建筑 id 幂等）；保护期从交付时刻起算 180 日。
+- 住宅交付、房地产成交、估值变化与宏观储蓄注入都不登记 GDP，也不产生 GDP 财务账户。
+- 土地估值可用指数、已完成建设阶段与当前执政方向修正（有界、确定性，不预知选举）；
+  它是参考估值，不是成交价。
+
+### 25.5 存档（v16 → v17）
+
+新增 `realEstate`、`housing`、`finance.subjectAccounts` 的 `household:<id>` 账户与 6 个流水类别。
+
+- 迁移以**迁移时刻**的阶层人数建立群组（不追溯历史增长），一次性为卖方与 AI 注入资金、
+  建立晴川公寓 100 套与 4 块储备土地；
+- 初始 99 套的保护期使用「开局第 7 个月月初」的绝对时刻：已过该时刻的旧档不再受保护，
+  不会重新获得整段保护期；
+- 已完成住房新区按真实布局补齐单元（幂等），不虚构不存在的建设；
+- 不重写历史月报、不追溯退款、不追溯减免旧房租，旧生活欠款保留；
+- 迁移用深克隆，同一份旧档重复解析不会重复注资或重复发房。
+
+### 25.6 校验
+
+- 产权主体类型合法；`household` 必须是配置中的群组，`investor` 必须有真实资金账户；
+- 住宅必须有建筑 id 与合法户型，土地必须有地块 id 且不能挂牌；
+- 入住状态与权利人标记一致；永久居住权恰好一处且不属于玩家；
+- 晴川公寓住宅单元恰好 100 套；挂牌价不低于下限、版本 ≥ 1、挂牌时间不晚于当前时间；
+- 土地报价必须指向存在的房产、出价机构有账户，且预留金额与报价金额**完全相等**；
+- 成交记录 id 唯一且序号小于 `nextTradeSeq`；只有玩家作为卖方才记录已实现价差；
+- 群组自有住房不超过家庭数、意愿不超过家庭数、每个群组都有资金账户；
+- 日期、金额全部按非负安全整数校验；当前版本损坏字段明确拒绝，不静默补默认值。
