@@ -54,7 +54,12 @@ function residenceBlock(view: EstateSectionView): string {
       <div class="stat-grid">
         ${stat('住所', view.residenceName, { note: view.residenceLayoutText })}
         ${stat('每月房租', view.monthRentText, { note: '永久居住权：免租，且不产生未来房租' })}
+        ${stat('每月生活费', view.livingCostText, { note: '房租之外的基本生活开支' })}
         ${stat('每月应缴合计', view.monthChargeText, { note: '仅基本生活费' })}
+        ${stat('当前生活欠款', view.debtText)}
+        ${stat('已结算月份', `${view.settledCount} 个`, {
+          note: view.lastSettledMonth ? `最近结算：${view.lastSettledMonth}` : '尚未结算过',
+        })}
       </div>
       <div class="note" style="margin-top:8px">${esc(view.residenceNote)}</div>
     </div>`;

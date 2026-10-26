@@ -199,6 +199,10 @@ const LEDGER_CATEGORIES: TransactionCategory[] = [
   'business-dividend',
   'business-liquidation',
   'supplies',
+  'home-purchase',
+  'home-sale',
+  'land-purchase',
+  'land-sale',
 ];
 
 function directionOf(fromOwner: string, toOwner: string): 'in' | 'out' | 'internal' {

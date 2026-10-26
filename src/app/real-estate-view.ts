@@ -81,6 +81,10 @@ export interface EstateSectionView {
   readonly savingsText: string;
   readonly monthChargeText: string;
   readonly monthRentText: string;
+  readonly livingCostText: string;
+  readonly debtText: string;
+  readonly settledCount: number;
+  readonly lastSettledMonth: string | null;
   readonly listingHint: string;
   readonly landHint: string;
   readonly onsiteHint: string;
@@ -296,6 +300,10 @@ export function buildEstateView(state: ReadonlyGameState, onsite: boolean): Esta
     savingsText: formatMoney(state.finance.accounts.savings),
     monthChargeText: formatMoneyCompact(charge.total),
     monthRentText: charge.rent === 0 ? '免租' : formatMoneyCompact(charge.rent),
+    livingCostText: formatMoneyCompact(charge.living),
+    debtText: formatMoney(state.living.debt),
+    settledCount: state.settlement.settledMonths.length,
+    lastSettledMonth: state.settlement.lastSettledMonth,
     listingHint:
       '挂牌后由居民与机构在月度市场中按真实需求与资金购买，没有保底回收、没有即时卖出。' +
       '价格过高会长期无人问津，价格过低会被更快买走。',
