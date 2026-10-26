@@ -30,9 +30,16 @@ import {
   type CityDevelopmentState,
 } from '../features/city-development';
 import { computeBaseGdpCents } from './city-statistics';
+import { seedRealEstateWorld } from './real-estate';
 import { beginCityIndexMonth } from './city-stock-index';
 import { noteTermStarted } from './politics-simulation';
 import { createEmploymentState, type EmploymentState } from '../features/employment';
+import { createHousingState, type HousingState } from '../features/housing';
+import {
+  createRealEstateState,
+  playerPropertyValueOf,
+  type RealEstateState,
+} from '../features/real-estate';
 import {
   bookOfCompany,
   createCompanyBook,
@@ -168,12 +175,18 @@ export interface GameState {
   cityLayout: CityLayoutState;
   /** 建设门槛、每任期一次建设判断、项目与永久建设历史（不创建 Three.js 对象）。 */
   cityDevelopment: CityDevelopmentState;
+  /** 产权、入住、挂牌、AI 土地报价与成交记录（不保存余额）。 */
+  realEstate: RealEstateState;
+  /** 3 个收入群组的家庭数、居住分配、购房意愿与月度住房指标（不保存余额与人口权威）。 */
+  housing: HousingState;
 }
 
 const MAX_REPORTS = 24;
 
 export function createInitialState(): GameState {
   const clock = createClockState();
+  // 人口先建立：住房群组的家庭数由阶层人数派生，不另存第二份人口
+  const population = createPopulationState(clock.totalMinute);
   const state: GameState = {
     clock,
     finance: createFinanceState({
@@ -190,7 +203,7 @@ export function createInitialState(): GameState {
     governance: createGovernanceState(),
     promotion: createPromotionState(),
     loan: createLoanState(),
-    population: createPopulationState(clock.totalMinute),
+    population,
     politics: createPoliticsState(),
     // 首次投票在第 30 天 08:00。开局是第 1 天 08:00（totalMinute = 0），
     // 两者时刻相同，所以相对开局是「第 30 天 − 第 1 天」= 29 个游戏日，
@@ -224,7 +237,12 @@ export function createInitialState(): GameState {
     }),
     cityLayout: createBaseLayout(),
     cityDevelopment: createCityDevelopmentState(0),
+    realEstate: createRealEstateState(),
+    housing: createHousingState(population.classes, 0),
   };
+  // 房地产世界：产权主体账户（真实资金）、晴川公寓存量、储备土地与卖方挂牌。
+  // 只在初始化时执行一次；重复调用按账户/建筑/地块 id 判重，不会重复注资或重复发房。
+  seedRealEstateWorld(state, clock.totalMinute);
   seedLegacySecurity(state, clock.totalMinute);
   seedCapitalWorld(state, clock.totalMinute);
   // 三家 AI 公司从开局起独立经营、已完成历史融资并上市；玩家不获得公司或资金
@@ -430,10 +448,21 @@ export function unlistedEquity(
 }
 
 /**
- * 净资产 = 现金 + 银行存款 + 未发工资 + 证券市值 + 未上市股权账面权益
+ * 玩家持有物业（住宅 + 土地）的参考估值合计。
+ *
+ * 只计**产权属于玩家**的物业：永久居住权不属于玩家产权，因此不计入个人净资产；
+ * 估值只在这里计一次，不额外加「未来出售收入」或重复加房屋本身。
+ */
+export function propertyValueOf(state: GameState | ReadonlyGameState): number {
+  return playerPropertyValueOf(state.realEstate);
+}
+
+/**
+ * 净资产 = 现金 + 银行存款 + 未发工资 + 证券市值 + 未上市股权账面权益 + 持有物业估值
  *          − 生活欠款 − 未偿贷款本息。
  *
- * 上市公司股份只在证券市值里计一次；未上市股权只在账面权益里计一次。
+ * 上市公司股份只在证券市值里计一次；未上市股权只在账面权益里计一次；
+ * 物业只在估值里计一次（永久居住权不计）。
  */
 export function netWorth(
   state: GameState | ReadonlyGameState): number {
@@ -442,7 +471,8 @@ export function netWorth(
     state.finance.accounts.savings +
     state.employment.accruedWages +
     stockValue(state) +
-    unlistedEquity(state) -
+    unlistedEquity(state) +
+    propertyValueOf(state) -
     state.living.debt -
     loanLiability(state)
   );

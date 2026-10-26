@@ -15,7 +15,7 @@ import {
   type MonthTotals,
 } from '../features/finance';
 import { LOAN_STATUS_LABELS, remainingDays, totalOwed, type LoanStatus } from '../features/loan';
-import { quoteMonth, type MonthCharge } from '../features/living';
+import type { MonthCharge } from '../features/living';
 import {
   averageCost,
   marketValue,
@@ -30,9 +30,11 @@ import {
   managedCompany,
   netWorth,
   playerHoldingOf,
+  propertyValueOf,
   stockValue,
   unlistedEquity,
 } from './state';
+import { monthChargeOf } from './residence';
 import { buildBusinessView, type BusinessView } from './business-view';
 import { buildSurvivalStatus, type SurvivalStatusView } from './supplies-view';
 
@@ -73,6 +75,7 @@ export interface MoneyView {
   readonly unpaidWages: number;
   readonly debt: number;
   readonly stockValue: number;
+  readonly propertyValue: number;
   readonly loanPrincipal: number;
   readonly loanInterest: number;
   readonly loanLiability: number;
@@ -85,6 +88,7 @@ export interface MoneyView {
   readonly unpaidWagesText: string;
   readonly debtText: string;
   readonly stockValueText: string;
+  readonly propertyValueText: string;
   readonly loanPrincipalText: string;
   readonly loanInterestText: string;
   readonly loanLiabilityText: string;
@@ -289,7 +293,7 @@ function buildLoanView(state: ReadonlyGameState, nowMinute: number, savings: num
 export function buildViewModel(state: ReadonlyGameState): GameViewModel {
   const now = dateAtMinute(state.clock.totalMinute, TIME.calendar);
   const job = findJob(state.employment.jobId) ?? FALLBACK_JOB;
-  const charge = quoteMonth();
+  const charge = monthChargeOf(state);
   const totals = monthlyTotals(state.finance, now.monthKey);
   const stockSum = stockValue(state);
   const loanSum = loanLiability(state);
@@ -303,6 +307,7 @@ export function buildViewModel(state: ReadonlyGameState): GameViewModel {
     unpaidWages: state.employment.accruedWages,
     debt: state.living.debt,
     stockValue: stockSum,
+    propertyValue: propertyValueOf(state),
     loanPrincipal,
     loanInterest,
     loanLiability: loanSum,
@@ -318,6 +323,7 @@ export function buildViewModel(state: ReadonlyGameState): GameViewModel {
     unpaidWagesText: formatMoney(state.employment.accruedWages),
     debtText: formatMoney(state.living.debt),
     stockValueText: formatMoney(stockSum),
+    propertyValueText: formatMoney(propertyValueOf(state)),
     loanPrincipalText: formatMoney(loanPrincipal),
     loanInterestText: formatMoney(loanInterest),
     loanLiabilityText: formatMoney(loanSum),

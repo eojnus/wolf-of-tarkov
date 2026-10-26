@@ -1,5 +1,5 @@
 /**
- * 存档迁移 —— v1 → v16 的完整版本链与受控旧数据修复。
+ * 存档迁移 —— v1 → v17 的完整版本链与受控旧数据修复。
  *
  * 这里保留历史上所有迁移步骤，顺序与数据保留行为不得改变；
  * 旧的修复规则（无偿配股回收、失效报价与预留清理、缺失股权簿补建）也集中在此。
@@ -30,6 +30,8 @@ import {
   policyEffectsFor,
 } from '../features/government';
 import { createBaseLayout } from '../features/city-layout';
+import { createHousingState } from '../features/housing';
+import { createRealEstateState } from '../features/real-estate';
 import { createCityDevelopmentState } from '../features/city-development';
 import { MINUTES_PER_MONTH, createTalentState } from '../features/talent';
 import { createTechnologyState } from '../features/technology';
@@ -47,7 +49,8 @@ import {
   setBaselinePending,
 } from '../app/city-statistics';
 import { beginCityIndexMonth } from '../app/city-stock-index';
-import { adoptLegacyDevelopment } from '../app/city-development';
+import { adoptLegacyDevelopment, deliverDistrictHousing } from '../app/city-development';
+import { seedRealEstateWorld } from '../app/real-estate';
 import { dateAtMinute } from '../core/calendar';
 import { isValidSpeed } from '../core/clock';
 import { fail } from './save-validation';
@@ -1128,6 +1131,41 @@ function appendNote(current: string | null, extra: string): string {
   return current ? `${current}；${extra}` : extra;
 }
 
+export /**
+ * v16 → v17：房地产与宏观住房切片。
+ *
+ * 保留要求（逐条）：
+ *  - 金钱、股份、公司、工资、生存、背包、赞助、选举、政府任期、建设历史、人物坐标全部保持原值；
+ *  - 群组家庭数由**迁移时刻**的阶层人数派生，不追溯过去增长、不伪造历史成交；
+ *  - 卖方与 AI 的资金一次性注入（真实主体账户 + 明确流水），只在迁移时发生一次；
+ *  - 晴川公寓 100 套（1 套永久居住权 + 99 套可售）、4 块储备土地一次性建立；
+ *  - 初始 99 套的保护期使用「开局第 7 个月月初」的绝对时刻：已经过了该时刻的旧档
+ *    不会重新获得整段保护期；
+ *  - 已完成的住房新区按实际布局补齐住宅单元，幂等，不重复交房；
+ *  - 不重写历史月报、不追溯退款、不减免旧房租；旧生活欠款原样保留。
+ */
+function upgradeV16toV17(state: Record<string, unknown>): Record<string, unknown> {
+  const next = structuredClone(state);
+  const clock = (next.clock ?? {}) as Record<string, unknown>;
+  const rawMinute = typeof clock.totalMinute === 'number' ? clock.totalMinute : 0;
+  const nowMinute = Number.isSafeInteger(rawMinute) && rawMinute > 0 ? rawMinute : 0;
+  const draft = next as unknown as GameState;
+
+  draft.housing = createHousingState(draft.population.classes, nowMinute);
+  draft.realEstate = createRealEstateState();
+
+  // 真实主体账户 + 存量 + 卖方挂牌：按账户/建筑/地块 id 判重，重复解析同一份旧档不会重复注资
+  seedRealEstateWorld(draft, nowMinute);
+
+  // 已完成的住房新区补齐单元（幂等）：来源是真实布局与永久完成记录，不虚构不存在的建设
+  for (const district of draft.cityLayout.districts) {
+    if (district.stage < 0) continue;
+    deliverDistrictHousing(draft, district.id, district.completedAtMinute);
+  }
+
+  return next;
+}
+
 export function migrateIfNeeded(
   root: Record<string, unknown>,
   version: number,
@@ -1200,6 +1238,10 @@ export function migrateIfNeeded(
   if (cursor === 15) {
     state = upgradeV15toV16(state);
     cursor = 16;
+  }
+  if (cursor === 16) {
+    state = upgradeV16toV17(state);
+    cursor = 17;
   }
   if (cursor !== SAVE.formatVersion) {
     fail(`不支持的存档版本 ${version}`);

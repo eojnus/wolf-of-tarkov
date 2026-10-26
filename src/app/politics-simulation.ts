@@ -15,6 +15,7 @@
  */
 
 import { EARLY_ELECTION_RULES } from '../content/politics';
+import { latestMetrics, NEUTRAL_PRESSURE } from '../features/housing';
 import { beginEarlyCampaign } from '../features/elections';
 import { activeTermOf } from '../features/government';
 import {
@@ -60,6 +61,9 @@ export function updatePoliticsMonth(
 ): PoliticsEvent[] {
   if (draft.politics.lastUpdatedMonthKey === input.monthKey) return [];
   const term = activeTermOf(draft.government);
+  // 住房压力取当月**已固化**的住房指标（月界第 4.5 步先于本步），没有样本时中性
+  const housingMetrics = latestMetrics(draft.housing);
+  const hasHousingSample = housingMetrics !== null && housingMetrics.monthKey === input.monthKey;
   const satisfactionInput: SatisfactionInput = {
     // 过渡负责人没有执政方向：M = 0，不给任何候选人方向加分。
     currentDirection: term?.direction ?? null,
@@ -68,6 +72,12 @@ export function updatePoliticsMonth(
     hasCostSample: input.hasCostSample,
     delivery: input.delivery,
     hasDeliverySample: input.hasDeliverySample,
+    housingPressure: {
+      low: housingMetrics?.pressure.low ?? NEUTRAL_PRESSURE,
+      mid: housingMetrics?.pressure.mid ?? NEUTRAL_PRESSURE,
+      high: housingMetrics?.pressure.high ?? NEUTRAL_PRESSURE,
+    },
+    hasHousingSample,
   };
   const average = updateMonthlySatisfaction(
     draft.politics,

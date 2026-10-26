@@ -42,13 +42,16 @@ export function createLivingState(): LivingState {
   return { debt: 0, debtRecords: [] };
 }
 
-/** 每月固定应缴金额。集中取自配置。 */
-export function quoteMonth(): MonthCharge {
-  return {
-    rent: ECONOMY.rentCents,
-    living: ECONOMY.livingCostCents,
-    total: ECONOMY.rentCents + ECONOMY.livingCostCents,
-  };
+/**
+ * 每月应缴金额 —— **唯一报价口径**（月结与界面都从这里取）。
+ *
+ * `rentExempt` 表示玩家已拥有永久免费居住权：此时房租为 0，基本生活费照常。
+ * 免租必须在**报价**环节生效，不能靠事后返款或直接改余额实现，否则月报、欠款与流水会互相矛盾。
+ */
+export function quoteMonth(options: { readonly rentExempt?: boolean } = {}): MonthCharge {
+  const rent = options.rentExempt === true ? 0 : ECONOMY.rentCents;
+  const living = ECONOMY.livingCostCents;
+  return { rent, living, total: rent + living };
 }
 
 /** 增加欠款（新的费用付不出时调用）。 */

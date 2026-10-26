@@ -31,11 +31,13 @@ import {
   availableFunds,
   loanLiability,
   netWorth,
+  propertyValueOf,
   stockValue,
   unlistedEquity,
   type ReadonlyGameState,
   type MonthReport,
 } from './state';
+import { estateSummaryText } from './real-estate-view';
 import {
   buildStocksSection,
   buildCapitalView,
@@ -239,6 +241,11 @@ function buildOverview(
     },
     { label: '股票市值', valueText: formatMoney(stockValue(state)) },
     {
+      label: '持有物业',
+      valueText: formatMoney(propertyValueOf(state)),
+      note: estateSummaryText(state),
+    },
+    {
       label: '企业账面权益',
       valueText: formatMoney(unlistedEquity(state)),
       note: company.hasCompany ? '企业现金 − 企业应付' : '尚未创建公司',
@@ -350,6 +357,11 @@ function buildFinance(state: ReadonlyGameState, query: PersonalUiQuery): Finance
     { label: '未发工资', valueText: formatMoney(state.employment.accruedWages), note: '计为正资产' },
     { label: '股票市值', valueText: formatMoney(stockValue(state)) },
     {
+      label: '持有物业',
+      valueText: formatMoney(propertyValueOf(state)),
+      note: estateSummaryText(state),
+    },
+    {
       label: '企业账面权益',
       valueText: formatMoney(unlistedEquity(state)),
       note: '只计一次，不重复加企业现金',
@@ -420,7 +432,7 @@ function buildFinance(state: ReadonlyGameState, query: PersonalUiQuery): Finance
     liabilities,
     netWorthText: formatMoney(netWorth(state)),
     formulaText:
-      '净资产 = 现金 + 银行存款 + 未发工资 + 股票市值 + 企业账面权益 − 生活欠款 − 未偿贷款本息',
+      '净资产 = 现金 + 银行存款 + 未发工资 + 股票市值 + 企业账面权益 + 持有物业估值 − 生活欠款 − 未偿贷款本息',
     monthIncomeText: formatMoney(totals.income),
     monthExpenseText: formatMoney(totals.expense),
     monthNetText: formatMoney(totals.net),

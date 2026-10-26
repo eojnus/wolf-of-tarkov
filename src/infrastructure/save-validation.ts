@@ -31,6 +31,7 @@ import {
   CONSTRUCTION_OUTCOME_LABELS,
 } from '../content/city-economy';
 import { DISTRICT_LAYOUT } from '../content/districts';
+import { HOME_LAYOUTS, HOUSING_GROUPS, REAL_ESTATE_RULES } from '../content/real-estate';
 import { POPULATION_RULES } from '../content/population';
 import { MARKET_MAKING_RULES, PRODUCT_STOCK_RULES, PROMOTION_RULES, findInvestor } from '../content/capital';
 import { BusinessError } from '../core/errors';
@@ -90,6 +91,7 @@ function assertAccountRef(value: unknown, label: string): void {
     owner !== 'business' &&
     owner !== 'investor' &&
     owner !== 'market' &&
+    owner !== 'household' &&
     owner !== 'external'
   ) {
     fail(`${label}.owner 取值非法`);
@@ -124,6 +126,12 @@ const CATEGORIES = new Set([
   'equity-promotion',
   'election-sponsorship',
   'supplies',
+  'home-purchase',
+  'home-sale',
+  'land-purchase',
+  'land-sale',
+  'housing-income',
+  'housing-consumption',
 ]);
 
 function assertNumber(value: unknown, label: string): number {
@@ -1081,6 +1089,10 @@ function validateSubjectAccounts(finance: Record<string, unknown>): void {
     }
     const subject = key.slice(0, split);
     if (subjectAccounts[subject] === undefined) fail(`预留 ${key} 没有对应的资金主体`);
+    // 预留只属于投资者/做市商主体；居民群组账户没有资金承诺语义
+    if (!subject.startsWith('investor:') && !subject.startsWith('market:')) {
+      fail(`预留 ${key} 的主体不支持资金预留`);
+    }
     totals.set(subject, (totals.get(subject) ?? 0) + reserved);
   }
   for (const [subject, total] of totals) {
@@ -2198,6 +2210,312 @@ function validateCityDevelopment(
   if (highWater < 0) fail('建设判断任期高水位非法');
 }
 
+/**
+ * 房地产切片校验（v17）。
+ *
+ * 只读、不修复：产权引用必须指向真实资金主体，产权与入住/挂牌/保护期彼此一致，
+ * 永久居住权必须且只能有一处，晴川公寓单元数固定为 100，报价预留必须与报价金额相等。
+ * 不一致的存档明确拒绝，不自动补造房产、不释放预留、不改写历史成交。
+ */
+function validateRealEstate(
+  state: Record<string, unknown>,
+  finance: Record<string, unknown>,
+  totalMinute: number,
+): void {
+  const estate = assertObject(state.realEstate, 'state.realEstate');
+  const subjectAccounts = assertObject(finance.subjectAccounts, 'state.finance.subjectAccounts');
+  const groupIds = new Set(HOUSING_GROUPS.map((group) => group.id));
+  const layoutIds = new Set<string>(HOME_LAYOUTS.map((layout) => String(layout.id)));
+
+  const properties = estate.properties;
+  if (!Array.isArray(properties)) fail('房产列表非法');
+  const propertyIds = new Set<string>();
+  let baseUnits = 0;
+  let freeResidences = 0;
+
+  for (const [index, item] of properties.entries()) {
+    const label = `第 ${index + 1} 处房产`;
+    const property = assertObject(item, label);
+    const id = assertString(property.id, `${label}标识`);
+    if (id.length === 0) fail(`${label}标识为空`);
+    if (propertyIds.has(id)) fail(`房产标识重复：${id}`);
+    propertyIds.add(id);
+    assertString(property.name, `${label}名称`);
+
+    const kind = assertString(property.kind, `${label}类型`);
+    if (kind !== 'home' && kind !== 'land') fail(`${label}类型非法：${kind}`);
+    assertString(property.districtId, `${label}城区`);
+    const area = assertNonNegativeInt(property.areaSqm, `${label}面积`);
+    if (area <= 0) fail(`${label}面积必须大于 0`);
+    const deliveredAt = assertNonNegativeInt(property.deliveredAtMinute, `${label}交付时间`);
+    if (deliveredAt > totalMinute) fail(`${label}交付时间晚于当前游戏时间`);
+    const valuation = assertNonNegativeInt(property.valuationCents, `${label}参考估值`);
+    if (valuation <= 0) fail(`${label}参考估值必须大于 0`);
+    assertNonNegativeInt(property.costBasisCents, `${label}成本基础`);
+    const acquiredAt = assertNonNegativeInt(property.acquiredAtMinute, `${label}取得时间`);
+    if (acquiredAt > totalMinute) fail(`${label}取得时间晚于当前游戏时间`);
+    assertOptionalNonNegativeInt(property.protectionUntilMinute, `${label}保护期`);
+    assertOptionalNonNegativeInt(property.firstSoldAtMinute, `${label}首次成交时间`);
+
+    const owner = assertObject(property.owner, `${label}产权主体`);
+    const ownerKind = assertString(owner.kind, `${label}产权主体类型`);
+    if (ownerKind !== 'player' && ownerKind !== 'household' && ownerKind !== 'investor') {
+      fail(`${label}产权主体类型非法：${ownerKind}`);
+    }
+    const ownerId = assertString(owner.id, `${label}产权主体标识`);
+    if (ownerId.length === 0) fail(`${label}产权主体标识为空`);
+    if (ownerKind === 'player' && ownerId !== 'player') fail(`${label}玩家产权主体标识非法`);
+    if (ownerKind === 'household' && !groupIds.has(ownerId)) {
+      fail(`${label}居民群组不存在：${ownerId}`);
+    }
+    if (ownerKind === 'investor' && subjectAccounts[`investor:${ownerId}`] === undefined) {
+      fail(`${label}机构产权主体没有资金账户：${ownerId}`);
+    }
+
+    if (kind === 'home') {
+      const buildingId = assertString(property.buildingId, `${label}所在建筑`);
+      if (buildingId.length === 0) fail(`${label}缺少所在建筑`);
+      if (property.parcelId !== null) fail(`${label}住宅不应带地块标识`);
+      const layoutId = assertString(property.layoutId, `${label}户型`);
+      if (!layoutIds.has(layoutId)) fail(`${label}户型非法：${layoutId}`);
+      const occupancy = assertString(property.occupancy, `${label}入住状态`);
+      if (
+        occupancy !== 'free-residence' &&
+        occupancy !== 'owner-occupied' &&
+        occupancy !== 'vacant'
+      ) {
+        fail(`${label}入住状态非法：${occupancy}`);
+      }
+      if (occupancy === 'free-residence') {
+        if (property.freeResidenceFor !== 'player') fail(`${label}永久居住权缺少权利人`);
+        if (ownerKind === 'player') fail(`${label}永久居住权不能由玩家持有产权`);
+        freeResidences += 1;
+      } else if (property.freeResidenceFor !== null && property.freeResidenceFor !== undefined) {
+        fail(`${label}非永久居住权住宅不应带权利人标记`);
+      }
+      if (property.askPriceCents !== null && property.askPriceCents !== undefined) {
+        fail(`${label}住宅不应带土地出让价`);
+      }
+      if (buildingId === 'home') baseUnits += 1;
+    } else {
+      if (property.layoutId !== null && property.layoutId !== undefined) {
+        fail(`${label}土地不应带户型`);
+      }
+      if (property.occupancy !== null && property.occupancy !== undefined) {
+        fail(`${label}土地不应带入住状态`);
+      }
+      if (property.freeResidenceFor !== null && property.freeResidenceFor !== undefined) {
+        fail(`${label}土地不应带居住权标记`);
+      }
+      if (property.buildingId !== null && property.buildingId !== undefined) {
+        fail(`${label}土地不应带建筑标识`);
+      }
+      const parcelId = assertString(property.parcelId, `${label}地块标识`);
+      if (parcelId !== id) fail(`${label}地块标识与房产标识不一致`);
+      // 出让价只在城市土地储备中心持有且正在出让时存在：玩家与机构持有都必须为 null，
+      // 但存在时必须是正整数。
+      if (property.askPriceCents !== null && property.askPriceCents !== undefined) {
+        const ask = assertNonNegativeInt(property.askPriceCents, `${label}出让价`);
+        if (ask <= 0) fail(`${label}出让价必须大于 0`);
+        if (ownerKind === 'player') fail(`${label}玩家持有土地不应有出让价`);
+      }
+      if (property.listing !== null && property.listing !== undefined) {
+        fail(`${label}土地不能挂牌`);
+      }
+    }
+
+    if (property.listing === undefined) fail(`${label}缺少挂牌字段`);
+    if (property.listing !== null) {
+      const listing = assertObject(property.listing, `${label}挂牌`);
+      const price = assertNonNegativeInt(listing.priceCents, `${label}挂牌价`);
+      if (price < REAL_ESTATE_RULES.minListingPriceCents) fail(`${label}挂牌价低于下限`);
+      const version = assertNonNegativeInt(listing.version, `${label}挂牌版本`);
+      if (version < 1) fail(`${label}挂牌版本必须从 1 开始`);
+      const listedAt = assertNonNegativeInt(listing.listedAtMinute, `${label}挂牌时间`);
+      if (listedAt > totalMinute) fail(`${label}挂牌时间晚于当前游戏时间`);
+    }
+  }
+
+  if (freeResidences !== 1) fail('永久居住权必须且只能有一处');
+  if (baseUnits !== 100) fail('晴川公寓住宅单元必须为 100 套');
+
+  // 土地报价：必须指向玩家持有的土地，且预留金额与报价相等
+  const offers = estate.offers;
+  if (!Array.isArray(offers)) fail('土地报价列表非法');
+  const offerIds = new Set<string>();
+  const reservations = assertObject(finance.reservations, 'state.finance.reservations');
+  for (const [index, item] of offers.entries()) {
+    const label = `第 ${index + 1} 份土地报价`;
+    const offer = assertObject(item, label);
+    const id = assertString(offer.id, `${label}标识`);
+    if (offerIds.has(id)) fail(`土地报价标识重复：${id}`);
+    offerIds.add(id);
+    const propertyId = assertString(offer.propertyId, `${label}地块`);
+    if (!propertyIds.has(propertyId)) fail(`${label}指向不存在的地块`);
+    const investorId = assertString(offer.investorId, `${label}出价机构`);
+    if (subjectAccounts[`investor:${investorId}`] === undefined) {
+      fail(`${label}出价机构没有资金账户`);
+    }
+    const price = assertNonNegativeInt(offer.priceCents, `${label}报价金额`);
+    if (price <= 0) fail(`${label}报价金额必须大于 0`);
+    const created = assertNonNegativeInt(offer.createdAtMinute, `${label}创建时间`);
+    if (created > totalMinute) fail(`${label}创建时间晚于当前游戏时间`);
+    const expires = assertNonNegativeInt(offer.expiresAtMinute, `${label}到期时间`);
+    if (expires <= created) fail(`${label}到期时间必须晚于创建时间`);
+    const reserved = reservations[`investor:${investorId}::${id}`];
+    if (reserved === undefined || reserved !== price) {
+      fail(`${label}的资金预留与报价金额不一致`);
+    }
+  }
+
+  // 成交记录：序号唯一、金额合法、玩家卖方才有已实现价差
+  const trades = estate.trades;
+  if (!Array.isArray(trades)) fail('成交记录非法');
+  if (trades.length > REAL_ESTATE_RULES.tradeHistoryLimit) fail('成交记录超出上限');
+  const tradeIds = new Set<string>();
+  const nextTradeSeq = assertNonNegativeInt(estate.nextTradeSeq, '成交序号');
+  if (nextTradeSeq < 1) fail('成交序号必须从 1 开始');
+  let realizedCount = 0;
+  for (const [index, item] of trades.entries()) {
+    const label = `第 ${index + 1} 条成交记录`;
+    const trade = assertObject(item, label);
+    const id = assertString(trade.id, `${label}标识`);
+    if (tradeIds.has(id)) fail(`成交记录标识重复：${id}`);
+    tradeIds.add(id);
+    const matched = /^trade-(\d+)$/.exec(id);
+    if (!matched) fail(`${label}标识格式非法：${id}`);
+    if (Number(matched[1]) >= nextTradeSeq) fail(`${label}序号不小于下一成交序号`);
+    const propertyId = assertString(trade.propertyId, `${label}房产`);
+    if (!propertyIds.has(propertyId)) fail(`${label}指向不存在的房产`);
+    const price = assertNonNegativeInt(trade.priceCents, `${label}成交价`);
+    if (price <= 0) fail(`${label}成交价必须大于 0`);
+    assertNonNegativeInt(trade.valuationCents, `${label}成交时估值`);
+    const atMinute = assertNonNegativeInt(trade.atMinute, `${label}成交时间`);
+    if (atMinute > totalMinute) fail(`${label}成交时间晚于当前游戏时间`);
+    assertString(trade.monthKey, `${label}月份`);
+    assertString(trade.operationId, `${label}操作标识`);
+    const buyer = assertObject(trade.buyer, `${label}买方`);
+    const seller = assertObject(trade.seller, `${label}卖方`);
+    assertString(buyer.kind, `${label}买方类型`);
+    assertString(seller.kind, `${label}卖方类型`);
+    if (trade.realizedCents === null || trade.realizedCents === undefined) {
+      if (seller.kind === 'player') fail(`${label}玩家卖出必须记录已实现价差`);
+    } else {
+      assertSignedInt(trade.realizedCents, `${label}已实现价差`);
+      if (seller.kind !== 'player') fail(`${label}非玩家卖出不应记录已实现价差`);
+      realizedCount += 1;
+    }
+    if (
+      trade.channel !== 'player' &&
+      trade.channel !== 'market' &&
+      trade.channel !== 'offer'
+    ) {
+      fail(`${label}成交渠道非法`);
+    }
+  }
+  const realizedCents = assertSignedInt(estate.realizedCents, '累计已实现价差');
+  void realizedCents;
+  const realizedTrades = assertNonNegativeInt(estate.realizedTrades, '已实现成交笔数');
+  if (realizedTrades < realizedCount) fail('已实现成交笔数少于保留的成交记录');
+  const nextPropertySeq = assertNonNegativeInt(estate.nextPropertySeq, '房产序号');
+  if (nextPropertySeq < 1) fail('房产序号必须从 1 开始');
+  const nextOfferSeq = assertNonNegativeInt(estate.nextOfferSeq, '报价序号');
+  if (nextOfferSeq < 1) fail('报价序号必须从 1 开始');
+  if (estate.lastMarketMonthKey !== null && estate.lastMarketMonthKey !== undefined) {
+    assertString(estate.lastMarketMonthKey, '住房市场最近结算月份');
+  }
+}
+
+/**
+ * 宏观住房切片校验（v17）：只保存家庭数、居住分配、意愿与月度指标。
+ *
+ * 不保存余额（余额在 finance 的 `household:<id>` 主体账户里）与人口权威，
+ * 因此这里只核对「家庭数与意愿的互斥/上限关系」和「每个群组都有真实资金账户」。
+ */
+function validateHousing(
+  state: Record<string, unknown>,
+  finance: Record<string, unknown>,
+  totalMinute: number,
+): void {
+  const housing = assertObject(state.housing, 'state.housing');
+  const subjectAccounts = assertObject(finance.subjectAccounts, 'state.finance.subjectAccounts');
+  const groups = housing.groups;
+  if (!Array.isArray(groups)) fail('住房群组列表非法');
+  if (groups.length !== HOUSING_GROUPS.length) fail('住房群组数量与配置不一致');
+  const seen = new Set<string>();
+  for (const [index, item] of groups.entries()) {
+    const label = `第 ${index + 1} 个住房群组`;
+    const group = assertObject(item, label);
+    const id = assertString(group.id, `${label}标识`);
+    const config = HOUSING_GROUPS.find((row) => row.id === id);
+    if (!config) fail(`${label}标识不在配置中：${id}`);
+    if (seen.has(id)) fail(`住房群组重复：${id}`);
+    seen.add(id);
+    if (group.income !== config.income) fail(`${label}收入阶层与配置不一致`);
+    const households = assertNonNegativeInt(group.households, `${label}家庭数`);
+    const owned = assertNonNegativeInt(group.ownedHouseholds, `${label}自有住房家庭数`);
+    if (owned > households) fail(`${label}自有住房家庭数超过家庭数`);
+    const wantFirst = assertNumber(group.wantFirstTime, `${label}首次购房意愿`);
+    const wantUpgrade = assertNumber(group.wantUpgrade, `${label}改善意愿`);
+    for (const [value, name] of [
+      [wantFirst, '首次购房意愿'],
+      [wantUpgrade, '改善意愿'],
+    ] as const) {
+      if (!Number.isFinite(value) || value < 0) fail(`${label}${name}必须是非负数`);
+      if (value > households) fail(`${label}${name}不能超过家庭数`);
+    }
+    if (subjectAccounts[`household:${id}`] === undefined) {
+      fail(`${label}缺少居民资金账户`);
+    }
+  }
+
+  if (housing.lastSettledMonthKey !== null && housing.lastSettledMonthKey !== undefined) {
+    assertString(housing.lastSettledMonthKey, '住房最近结算月份');
+  }
+  const observationStart = assertNonNegativeInt(
+    housing.observationStartMinute,
+    '住房观察起点',
+  );
+  if (observationStart > totalMinute) fail('住房观察起点晚于当前游戏时间');
+
+  const monthly = housing.monthly;
+  if (!Array.isArray(monthly)) fail('住房月度指标非法');
+  if (monthly.length > REAL_ESTATE_RULES.monthHistoryLimit) fail('住房月度指标超出上限');
+  let previousMonth = '';
+  for (const [index, item] of monthly.entries()) {
+    const label = `第 ${index + 1} 条住房月度指标`;
+    const row = assertObject(item, label);
+    const monthKey = assertString(row.monthKey, `${label}月份`);
+    if (previousMonth !== '' && monthKey <= previousMonth) fail('住房月度指标月份必须严格递增');
+    previousMonth = monthKey;
+    const settledAt = assertNonNegativeInt(row.settledAtMinute, `${label}结算时刻`);
+    if (settledAt > totalMinute) fail(`${label}结算时刻晚于当前游戏时间`);
+    for (const key of [
+      'marketSales',
+      'householdSales',
+      'investorSales',
+      'playerSales',
+      'vacantUnits',
+      'listedUnits',
+      'unmetDemand',
+    ] as const) {
+      assertNonNegativeInt(row[key], `${label}${key}`);
+    }
+    for (const key of ['avgSalePriceCents', 'avgValuationCents'] as const) {
+      assertNonNegativeInt(row[key], `${label}${key}`);
+    }
+    const affordability = assertObject(row.affordability, `${label}负担能力`);
+    const pressure = assertObject(row.pressure, `${label}住房压力`);
+    for (const tier of ['low', 'mid', 'high'] as const) {
+      const ratio = assertNumber(affordability[tier], `${label}负担能力 ${tier}`);
+      if (ratio < 0) fail(`${label}负担能力不能为负`);
+      const value = assertNumber(pressure[tier], `${label}住房压力 ${tier}`);
+      if (value < 0 || value > 1) fail(`${label}住房压力必须在 0～1`);
+    }
+    if (typeof row.complete !== 'boolean') fail(`${label}完整月标记非法`);
+  }
+}
+
 export function validateSaveState(rawState: unknown): Record<string, unknown> {
   const state = assertObject(rawState, 'state');
 
@@ -2430,6 +2748,8 @@ export function validateSaveState(rawState: unknown): Record<string, unknown> {
   const layout = validateCityLayout(state, enterpriseIds);
   validateCityStatistics(state, totalMinute);
   validateCityDevelopment(state, layout);
+  validateRealEstate(state, finance, totalMinute);
+  validateHousing(state, finance, totalMinute);
 
   const world = assertObject(state.world, 'state.world');
   const player = assertObject(world.player, 'state.world.player');

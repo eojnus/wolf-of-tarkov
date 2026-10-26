@@ -21,10 +21,16 @@ import {
 } from '../../core/money';
 
 /**
- * 账户归属。personal / business / investor / market 都是**真实资金主体**，
+ * 账户归属。personal / business / investor / market / household 都是**真实资金主体**，
  * 有余额、受同一份流水约束；external 只表示「系统外部对手方」，没有余额。
+ *
+ * `household` 是宏观居民群组（低收入/中等/高收入家庭）的资金账户：
+ * 住房模块不另存一份可支配余额，全部通过这里记账。
  */
-export type AccountOwner = 'personal' | 'business' | 'investor' | 'market' | 'external';
+export type AccountOwner = 'personal' | 'business' | 'investor' | 'market' | 'household' | 'external';
+
+/** 有主体账户（subjectAccounts）的归属：投资者、做市商与居民群组。 */
+export type SubjectOwner = 'investor' | 'market' | 'household';
 
 export interface AccountRef {
   readonly owner: AccountOwner;
@@ -43,6 +49,7 @@ export function describeAccount(account: AccountRef): string {
     return account.id === 'cash' ? '现金' : account.id === 'savings' ? '银行存款' : `个人·${account.id}`;
   }
   if (account.owner === 'business') return `企业·${account.id}`;
+  if (account.owner === 'household') return `居民·${account.id}`;
   return EXTERNAL_LABELS[account.id] ?? account.id;
 }
 
@@ -62,6 +69,8 @@ const EXTERNAL_LABELS: Record<string, string> = {
   investor: '外部投资人',
   tax: '税费',
   campaign: '竞选机构',
+  'household-income': '居民收入来源',
+  'household-consumption': '居民消费',
 };
 
 /** 业务类别：决定流水展示与月报归类。 */
@@ -91,7 +100,13 @@ export type TransactionCategory =
   | 'business-buyback'
   | 'equity-promotion'
   | 'election-sponsorship'
-  | 'supplies';
+  | 'supplies'
+  | 'home-purchase'
+  | 'home-sale'
+  | 'land-purchase'
+  | 'land-sale'
+  | 'housing-income'
+  | 'housing-consumption';
 
 export const CATEGORY_LABELS: Record<TransactionCategory, string> = {
   initial: '初始资金',
@@ -120,6 +135,12 @@ export const CATEGORY_LABELS: Record<TransactionCategory, string> = {
   'equity-promotion': '投资者宣传',
   'election-sponsorship': '竞选赞助',
   supplies: '生活补给',
+  'home-purchase': '购买住宅',
+  'home-sale': '出售住宅',
+  'land-purchase': '购买土地',
+  'land-sale': '出售土地',
+  'housing-income': '居民收入',
+  'housing-consumption': '居民消费',
 };
 
 /**
@@ -139,6 +160,11 @@ const NON_FLOW_CATEGORIES = new Set<TransactionCategory>([
   'business-liquidation',
   'business-buyback',
   'equity-financing',
+  // 房地产买卖是资金与资产的形态转换，不是消费或投资收益
+  'home-purchase',
+  'home-sale',
+  'land-purchase',
+  'land-sale',
 ]);
 
 /** 不计入「企业经营收支」的类别：出资、分红、清算、融资与回购属于资本行为。 */
@@ -148,6 +174,11 @@ const NON_OPERATING_CATEGORIES = new Set<TransactionCategory>([
   'business-liquidation',
   'business-buyback',
   'equity-financing',
+  // 房地产买卖是资金与资产的形态转换，不是消费或投资收益
+  'home-purchase',
+  'home-sale',
+  'land-purchase',
+  'land-sale',
 ]);
 
 export interface LedgerEntry {
@@ -257,7 +288,7 @@ export function businessAccountRef(companyId: string): AccountRef {
 
 export function balanceOf(state: FinanceState, account: AccountRef): number {
   if (account.owner === 'business') return state.businessAccounts[account.id] ?? 0;
-  if (account.owner === 'investor' || account.owner === 'market') {
+  if (account.owner === 'investor' || account.owner === 'market' || account.owner === 'household') {
     return state.subjectAccounts[`${account.owner}:${account.id}`] ?? 0;
   }
   if (account.owner !== 'personal') return 0;
@@ -838,17 +869,17 @@ export interface SubjectContext extends PostingContext {
   readonly memo: string;
 }
 
-export function subjectKey(owner: 'investor' | 'market', id: string): string {
+export function subjectKey(owner: SubjectOwner, id: string): string {
   return `${owner}:${id}`;
 }
 
-export function subjectRef(owner: 'investor' | 'market', id: string): AccountRef {
+export function subjectRef(owner: SubjectOwner, id: string): AccountRef {
   return { owner, id };
 }
 
 export function subjectBalance(
   state: FinanceState | DeepReadonly<FinanceState>,
-  owner: 'investor' | 'market',
+  owner: SubjectOwner,
   id: string,
 ): number {
   return state.subjectAccounts[subjectKey(owner, id)] ?? 0;
@@ -901,7 +932,7 @@ export function availableSubjectBalance(
 /** 给外部主体开户并注资。`openingCents` 必须来自外部投资人，会留下真实流水。 */
 export function openSubjectAccount(
   state: FinanceState,
-  owner: 'investor' | 'market',
+  owner: SubjectOwner,
   id: string,
   openingCents: number,
   ctx: PostingContext,
@@ -929,7 +960,7 @@ export function openSubjectAccount(
 
 function creditSubject(
   state: FinanceState,
-  owner: 'investor' | 'market',
+  owner: SubjectOwner,
   id: string,
   amount: number,
 ): void {
@@ -939,7 +970,7 @@ function creditSubject(
 
 function debitSubject(
   state: FinanceState,
-  owner: 'investor' | 'market',
+  owner: SubjectOwner,
   id: string,
   amount: number,
 ): void {
@@ -1076,6 +1107,7 @@ export function transferFunds(
  * 个人与企业账户的既有支付语义不变（它们没有预留）。
  */
 function assertSubjectSpendable(state: FinanceState, account: AccountRef, amount: number): void {
+  // 居民群组账户没有预留，支出上限就是余额
   if (account.owner !== 'investor' && account.owner !== 'market') return;
   const available = availableSubjectBalance(state, account.owner, account.id);
   if (amount > available) {
@@ -1144,6 +1176,7 @@ function withdraw(state: FinanceState, account: AccountRef, amount: number): voi
       return;
     case 'investor':
     case 'market':
+    case 'household':
       debitSubject(state, account.owner, account.id, amount);
       return;
     default:
@@ -1161,6 +1194,7 @@ function deposit(state: FinanceState, account: AccountRef, amount: number): void
       return;
     case 'investor':
     case 'market':
+    case 'household':
       creditSubject(state, account.owner, account.id, amount);
       return;
     default:

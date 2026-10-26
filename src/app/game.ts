@@ -36,6 +36,8 @@ import { buildCityEconomyView } from './city-view';
 import { CapitalCommands } from './capital';
 import { GameCommands } from './commands';
 import { SuppliesCommands } from './supplies';
+import { EstateCommands } from './real-estate-commands';
+import { buildEstateView } from './real-estate-view';
 import { buildSuppliesView } from './supplies-view';
 import { moveMultiplierOf } from '../features/survival';
 import { createInitialState, type GameState } from './state';
@@ -58,6 +60,7 @@ export class Game {
   readonly capital: CapitalCommands;
   readonly government: GovernmentCommands;
   readonly supplies: SuppliesCommands;
+  readonly estate: EstateCommands;
   private readonly world: World;
   private readonly hud: Hud;
   private readonly panels: PanelManager;
@@ -114,6 +117,11 @@ export class Game {
       requestAutoSave: () => this.enqueueAutoSave(),
       // 购买上下文由世界交互提供：没站在便利店里就无法远程购物
       currentShopId: () => this.activeShopId,
+    });
+
+    this.estate = new EstateCommands(this.store, {
+      notify: (kind, message) => this.toast.show(kind, message),
+      requestAutoSave: () => this.enqueueAutoSave(),
     });
 
     this.world = new World(elements.viewport, {
@@ -239,6 +247,15 @@ export class Game {
       onVoteProposal: (companyId, proposalId, choice) =>
         this.capital.voteOnProposal(companyId, proposalId, choice),
       onUseItem: (itemId, requestId) => this.supplies.useItem(itemId, requestId),
+      onBuyHome: (propertyId, priceCents, listingVersion) =>
+        this.confirmBuyHome(propertyId, priceCents, listingVersion),
+      onBuyLand: (propertyId, priceCents) => this.confirmBuyLand(propertyId, priceCents),
+      onListHome: (propertyId, priceCents, expectedVersion) =>
+        this.estate.listHome(propertyId, priceCents, expectedVersion),
+      onCancelListing: (propertyId, expectedVersion) =>
+        this.estate.cancelListing(propertyId, expectedVersion),
+      onAcceptOffer: (offerId, priceCents) => this.confirmAcceptOffer(offerId, priceCents),
+      onRejectOffer: (offerId) => this.estate.rejectOffer(offerId),
     }, (query) => buildPersonalView(this.store.state, query),
     (securityId, order) => buildSecuritiesPanel(this.store.state, securityId, order),
     () => buildGovernmentView(this.store.state),
@@ -265,7 +282,9 @@ export class Game {
         this.openPanel('personal');
         this.panels.openPersonalSection('inventory');
       },
-    });
+    },
+    (onsite) => buildEstateView(this.store.state, onsite),
+    );
 
     this.unsubscribe = this.store.subscribe((state) => {
       const view = buildViewModel(state);
@@ -737,6 +756,120 @@ export class Game {
    * 预览文案来自只读视图（与界面显示同一份数字），确认后才提交一次命令；
    * 业务层仍会重新校验权限、现金、库存与价格，确认框里的数字不替代执行时的校验。
    */
+  /* ------------------------------------------------------ 房地产确认 */
+
+  /**
+   * 买入住宅的确认：固定「玩家眼下确认的这一笔」（资产、价格、付款账户、结果），
+   * 命令执行时重新校验挂牌价与版本；变化即拒绝，不静默换价或换资产。
+   */
+  private confirmBuyHome(
+    propertyId: string,
+    priceCents: number,
+    listingVersion: number,
+  ): CommandOutcome {
+    if (!propertyId) return { ok: false, message: null };
+    const view = buildEstateView(this.store.state, true);
+    const card = view.marketHomes.find((item) => item.id === propertyId);
+    if (!card) {
+      this.toast.show('error', '该房源已不在售，请刷新列表');
+      return { ok: false, message: null };
+    }
+    if (card.priceCents !== priceCents || card.listingVersion !== listingVersion) {
+      this.toast.show('error', '挂牌信息已更新，请按最新价格重新确认');
+      return { ok: false, message: null };
+    }
+    if (!card.canBuy) {
+      this.toast.show('error', card.buyNote || '当前无法购买该房源');
+      return { ok: false, message: null };
+    }
+    const savings = this.store.state.finance.accounts.savings;
+    const remainder = savings - priceCents;
+    const lines = [
+      `确认购买「${card.name}」？`,
+      '',
+      `· 户型与地段：${card.layoutText} · ${card.districtText}`,
+      `· 挂牌价：${card.priceText}（参考估值 ${card.valuationText}）`,
+      `· 付款账户：个人银行存款（当前 ${formatMoney(savings)}）`,
+      `· 付款后余额：${formatMoney(remainder)}`,
+      `· 结果：住宅产权转到你名下，成为持有资产；本次不产生按揭、不自动搬家`,
+      '',
+      '两件事需要你确认：一是成交后房价与挂牌可能变化，提交时价格或版本不一致会直接拒绝；',
+      '二是持有期间没有租金收入，卖出需要重新挂牌并由市场成交。',
+    ];
+    if (!window.confirm(lines.join('\n'))) return { ok: false, message: null };
+    return this.estate.buyHome(propertyId, priceCents, listingVersion);
+  }
+
+  /** 受让储备土地的确认：出让价、付款账户与结果。 */
+  private confirmBuyLand(propertyId: string, priceCents: number): CommandOutcome {
+    if (!propertyId) return { ok: false, message: null };
+    const view = buildEstateView(this.store.state, true);
+    const card = view.reserveLand.find((item) => item.id === propertyId);
+    if (!card) {
+      this.toast.show('error', '该地块已不可受让，请刷新列表');
+      return { ok: false, message: null };
+    }
+    if (card.priceCents !== priceCents) {
+      this.toast.show('error', '出让价已更新，请按最新价格重新确认');
+      return { ok: false, message: null };
+    }
+    if (!card.canBuyLand) {
+      this.toast.show('error', card.buyNote || '当前无法受让该地块');
+      return { ok: false, message: null };
+    }
+    const savings = this.store.state.finance.accounts.savings;
+    const lines = [
+      `确认受让「${card.name}」？`,
+      '',
+      `· 面积与用途：${card.layoutText}`,
+      `· 出让价：${card.priceText}（参考估值 ${card.valuationText}）`,
+      `· 付款账户：个人银行存款（当前 ${formatMoney(savings)}）`,
+      `· 结果：土地产权转到你名下；首版不能在这块地上建房，也不会自动产生收益`,
+      '',
+      '机构可能随后对你的地块提出限时收购报价，是否接受由你决定。',
+    ];
+    if (!window.confirm(lines.join('\n'))) return { ok: false, message: null };
+    return this.estate.buyLand(propertyId, priceCents);
+  }
+
+  /** 接受土地收购报价的确认：报价金额与到账结果。 */
+  private confirmAcceptOffer(offerId: string, priceCents: number): CommandOutcome {
+    if (!offerId) return { ok: false, message: null };
+    const view = buildEstateView(this.store.state, true);
+    let matched: { name: string; buyer: string; price: number; expires: string } | null = null;
+    for (const card of view.playerLand) {
+      const offer = card.offers.find((item) => item.id === offerId);
+      if (offer) {
+        matched = {
+          name: card.name,
+          buyer: offer.buyerText,
+          price: offer.priceCents,
+          expires: offer.expiresText,
+        };
+        break;
+      }
+    }
+    if (!matched) {
+      this.toast.show('error', '该报价已失效，请刷新');
+      return { ok: false, message: null };
+    }
+    if (matched.price !== priceCents) {
+      this.toast.show('error', '报价金额已变化，请重新确认');
+      return { ok: false, message: null };
+    }
+    const lines = [
+      `确认接受「${matched.buyer}」对「${matched.name}」的收购报价？`,
+      '',
+      `· 报价：${formatMoney(priceCents)}（${matched.expires}）`,
+      `· 收款账户：个人银行存款`,
+      `· 结果：土地产权转给该机构，报价资金来自对方已预留的真实资金`,
+      '',
+      '接受后无法撤销；其他报价会同时失效并释放对方的预留资金。',
+    ];
+    if (!window.confirm(lines.join('\n'))) return { ok: false, message: null };
+    return this.estate.acceptOffer(offerId, priceCents);
+  }
+
   private confirmBuyback(
     companyId: string,
     shares: number,

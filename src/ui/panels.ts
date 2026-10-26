@@ -31,7 +31,14 @@ import type {
 } from '../app/securities-view';
 import { GameWindow, type NavGroup, type WindowChrome } from './game-window';
 import type { IconName } from './icons';
-import { renderHome, renderHomeBrief, renderPause } from './life-panels';
+import { renderPause } from './life-panels';
+import {
+  estateHeadline,
+  renderEstate,
+  renderEstateBrief,
+  renderRestBlock,
+} from './estate-panel';
+import type { EstateSectionView } from '../app/real-estate-view';
 import { destroyStockCharts, paintStockCharts, type ChartInput } from './stock-chart';
 
 export type PanelId =
@@ -100,6 +107,18 @@ export interface PanelHandlers {
   ): CommandOutcome;
   /** 从背包使用一件消耗品；requestId 由界面复用，命令层保证不重复消耗。 */
   onUseItem(itemId: string, requestId: string): CommandOutcome;
+  /** 房地产：现场买入住宅（价格与挂牌版本在提交时重新校验）。 */
+  onBuyHome(propertyId: string, priceCents: number, listingVersion: number): CommandOutcome;
+  /** 房地产：受让城市储备土地。 */
+  onBuyLand(propertyId: string, priceCents: number): CommandOutcome;
+  /** 房地产：挂牌或改价（带期望版本）。 */
+  onListHome(propertyId: string, priceCents: number, expectedVersion: number): CommandOutcome;
+  /** 房地产：撤销挂牌（带期望版本）。 */
+  onCancelListing(propertyId: string, expectedVersion: number): CommandOutcome;
+  /** 房地产：接受 AI 土地收购报价。 */
+  onAcceptOffer(offerId: string, priceCents: number): CommandOutcome;
+  /** 房地产：拒绝 AI 土地收购报价。 */
+  onRejectOffer(offerId: string): CommandOutcome;
 }
 
 /** 建筑入口在地点上的含义：用于标题栏的地点说明，不参与任何业务判断。 */
@@ -125,8 +144,8 @@ const ENTRY_META: Record<
     place: '晴川公寓',
     short: '晴川公寓',
     kicker: '个人生活',
-    title: '住房与休息',
-    sub: '休息会推进时间，时间照常跨过行情、计息与月结节点。',
+    title: '住房与土地',
+    sub: '现场可买卖住宅与储备土地；休息会推进时间，时间照常跨过行情、计息与月结节点。',
   },
   securities: {
     place: `${BRANDING.cityStem}证券中心`,
@@ -188,7 +207,7 @@ const SECTIONS: readonly SectionSpec[] = [
   { key: 'life.inventory', group: 'life', label: '背包', icon: 'backpack', owner: 'personal', personal: 'inventory' },
   { key: 'life.work', group: 'life', label: '工作', icon: 'briefcase', owner: 'personal', personal: 'work', onsite: 'office' },
   { key: 'life.finance', group: 'life', label: '个人财务', icon: 'wallet', owner: 'personal', personal: 'finance', onsite: 'bank' },
-  { key: 'life.housing', group: 'life', label: '住房与休息', icon: 'house', owner: 'router', onsite: 'home' },
+  { key: 'life.housing', group: 'life', label: '住房与土地', icon: 'house', owner: 'router', onsite: 'home' },
   { key: 'life.shop', group: 'life', label: '便利店补给', icon: 'store', owner: 'shop', requires: 'shop' },
 
   // 企业经营
@@ -511,6 +530,7 @@ export class PanelManager {
     cityEconomyView: () => CityEconomyPanelView,
     shopView: () => SuppliesView,
     shopHandlers: ShopUiHandlers,
+    private readonly estateView: (onsite: boolean) => EstateSectionView,
   ) {
     this.root = root;
     this.win = new GameWindow(root, {
@@ -747,10 +767,15 @@ export class PanelManager {
         .join('')}</div>`;
     }
     switch (spec.key) {
-      case 'life.housing':
-        return `<div class="gw-section">${
-          this.entry === 'home' ? renderHome(view) : renderHomeBrief(view)
+      case 'life.housing': {
+        // 住房与土地：远程只读，晴川公寓现场才出现交易按钮与休息入口
+        const onsite = this.entry === 'home';
+        const estate = this.estateView(onsite);
+        const head = `<div class="note">${esc(estateHeadline(estate))}</div>`;
+        return `<div class="gw-section">${head}${
+          onsite ? `${renderRestBlock(TIME.restPresets)}${renderEstate(estate)}` : renderEstateBrief(estate)
         }</div>`;
+      }
       case 'market.quotes':
         return this.renderQuotes(view);
       case 'market.trade':
@@ -1008,6 +1033,45 @@ export class PanelManager {
         break;
       case 'sell-quick':
         this.fillShares('sell-input', target.dataset.shares);
+        break;
+      case 're-buy-home': {
+        const propertyId = target.dataset.property ?? '';
+        const priceCents = Number(target.dataset.price ?? '0');
+        const version = Number(target.dataset.version ?? '0');
+        this.handlers.onBuyHome(propertyId, priceCents, version);
+        break;
+      }
+      case 're-buy-land': {
+        const propertyId = target.dataset.property ?? '';
+        const priceCents = Number(target.dataset.price ?? '0');
+        this.handlers.onBuyLand(propertyId, priceCents);
+        break;
+      }
+      case 're-list-home': {
+        const propertyId = target.dataset.property ?? '';
+        const version = Number(target.dataset.version ?? '0');
+        this.handlers.onListHome(
+          propertyId,
+          this.readMoney(`re-price-${propertyId}`),
+          version,
+        );
+        break;
+      }
+      case 're-cancel-listing': {
+        const propertyId = target.dataset.property ?? '';
+        const version = Number(target.dataset.version ?? '0');
+        this.handlers.onCancelListing(propertyId, version);
+        break;
+      }
+      case 're-accept-offer': {
+        this.handlers.onAcceptOffer(
+          target.dataset.offer ?? '',
+          Number(target.dataset.price ?? '0'),
+        );
+        break;
+      }
+      case 're-reject-offer':
+        this.handlers.onRejectOffer(target.dataset.offer ?? '');
         break;
       case 'save':
         this.handlers.onSave();

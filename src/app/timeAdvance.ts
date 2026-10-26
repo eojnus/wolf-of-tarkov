@@ -11,7 +11,8 @@
  *      2. 到期旧建设项目先完成
  *      3. 固化本月经营产出统计与股市指数窗口
  *      4. 经济人口月结（经营观察 + 市场窗口 → 阶层流动）
- *      5. 政治满意度更新
+ *      4.5 住房月结（家庭数 → 收入/消费 → 需求 → 成交 → 指标固化）
+ *      5. 政治满意度更新（引用人口摘要 + 住房压力）
  *      6. 提前选举条件检查
  *      7. 到期选举、真实新任期与属性切换（零票重选不建任期）
  *      8. 本任期唯一一次建设判断
@@ -76,6 +77,8 @@ import { completeDueProjects } from './city-development';
 import { rollCityOutputMonth, snapshotCityMonth } from './city-statistics';
 import { beginCityIndexMonth } from './city-stock-index';
 import { tryCreateCityEnterprise } from './city-enterprises';
+import { expireLandOffers } from './real-estate';
+import { settleHousingMonth } from './housing-simulation';
 import { managedCompany, type GameState, type MonthReport } from './state';
 
 /** 一次推进中发生的贷款到期事件，供上层汇总提示。 */
@@ -315,6 +318,8 @@ export function advanceGameTime(
             result,
             honorKeyEvents,
           );
+          // 土地收购报价按游戏日到期：只释放该单据的预留，不重复承诺同一笔资金
+          expireLandOffers(draft, segmentEnd);
           // 治理与竞选资源检查排在该时刻的经营结算之后；月界时整段推后到月结完成之后（见 onMonthEnd），
           // 同一个日界只执行一次，不重复检查也不提前用未结算的结果做判断。
           if (!atMonthBoundary) {
@@ -381,6 +386,14 @@ export function advanceGameTime(
 
         // 4. 经济人口月结：经营观察 + 市场窗口 → 阶层流动（人口系统只负责自己的部分）
         settlePopulationMonth(draft, {
+          monthKey: info.monthKey,
+          monthIndex: info.monthIndex,
+          boundaryMinute: info.boundaryMinute,
+        });
+
+        // 4.5 住房月结：居民收入/消费入账、需求累积、供需匹配成交、指标固化。
+        // 必须排在人口月结之后（家庭数由阶层人数派生）、政治满意度之前（满意度读本月指标）。
+        settleHousingMonth(draft, {
           monthKey: info.monthKey,
           monthIndex: info.monthIndex,
           boundaryMinute: info.boundaryMinute,

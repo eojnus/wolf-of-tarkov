@@ -217,6 +217,14 @@ export interface SatisfactionInput {
   /** 已承诺建设项目的真实落实 D ∈ [0,1]；没有承诺项目时 hasDeliverySample=false。 */
   readonly delivery: number;
   readonly hasDeliverySample: boolean;
+  /**
+   * 住房压力 H（按收入阶层映射）∈ [0,1]，0.5 为中性。
+   *
+   * 只有住房模型固化了当月指标时 hasHousingSample 才为 true；
+   * 没有样本时按中性处理（不加分也不扣分）。
+   */
+  readonly housingPressure: { readonly low: number; readonly mid: number; readonly high: number };
+  readonly hasHousingSample: boolean;
 }
 
 function satisfactionOfGroup(
@@ -335,8 +343,9 @@ export function marginSatisfactionOf(
  *   M = 当前执政方向与该群体利益的政策匹配（[-1,1]）；过渡负责人 M=0；
  *   E = clamp(employment.job × rawJ + employment.industry × rawI, -1, 1)；
  *   P = clamp(rawP, 0, 1)；C = 有样本时的 costPressure；D = 有履约样本时的 delivery；
- *   T = clamp(base + 10M + 15E − 25P − 10C + 10D, 0, 100)。
- * 其中 rawJ/rawI/rawP 已由调用方显式还原到 0.30 权重之前的原始尺度。
+ *   T = clamp(base + 10M + 15E − 25P − 10C + 10D − 12×(H − 0.5), 0, 100)。
+ * 其中 rawJ/rawI/rawP 已由调用方显式还原到 0.30 权重之前的原始尺度；
+ * H 是按群体所属收入阶层取的住房压力（0.5 中性），没有样本时按中性处理。
  */
 function targetSatisfactionOf(
   config: PoliticsGroupConfig,
@@ -357,13 +366,18 @@ function targetSatisfactionOf(
   );
   const cost = input.hasCostSample ? clamp(input.costPressure, 0, 1) : 0;
   const delivery = input.hasDeliverySample ? clamp(input.delivery, 0, 1) : 0;
+  // 住房压力越高满意度越低：H 是 0～1 的压力值，0.5 为中性，因此取负项
+  // 住房压力越高满意度越低：H 是 0～1 的压力值，0.5 为中性，因此取负项
+  const housingRaw = input.hasHousingSample ? input.housingPressure[config.income] : 0.5;
+  const housing = clamp(housingRaw, 0, 1) - 0.5;
   const target =
     rules.base +
     rules.matchWeight * match +
     rules.employmentWeight * employment +
     rules.pressureWeight * rawP +
     rules.costWeight * cost +
-    rules.deliveryWeight * delivery;
+    rules.deliveryWeight * delivery -
+    rules.housingWeight * housing;
   return clamp(target, rules.min, rules.max);
 }
 

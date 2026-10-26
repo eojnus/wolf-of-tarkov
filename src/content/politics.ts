@@ -137,6 +137,12 @@ export const SATISFACTION_RULES = {
   costWeight: -10,
   /** D：已承诺建设项目的真实落实。 */
   deliveryWeight: 10,
+  /**
+   * H：住房压力（0～1，0.5 为中性）按群体所属收入阶层映射，公式项为
+   * `−housingWeight × (H − 0.5)`：压力越高，目标满意度越低，范围 ±housingWeight/2。
+   * 只使用住房模型固化的当月指标，不读取玩家个人收支。
+   */
+  housingWeight: 12,
   /** 月度滚动速率。 */
   updateRate: 0.2,
   /** 单月最大变动。 */

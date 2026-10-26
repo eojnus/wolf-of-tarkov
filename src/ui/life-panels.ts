@@ -1,5 +1,7 @@
 /**
- * 个人生活类面板：银行（存取款与贷款）、就业、住宅、系统菜单。
+ * 个人生活类面板：银行（存取款与贷款）、就业、系统菜单。
+ *
+ * 住房与土地在 `ui/estate-panel.ts`（含交易、报价与休息入口）。
  *
  * 只把只读视图渲染成 HTML，并把点击翻译成 data-action；
  * 所有写操作都由 PanelManager 转交给 app 层的命令，这里不碰状态。
@@ -8,7 +10,7 @@
  * 但现场办理的含义不变：存取款、入职上班、休息睡觉仍然只在对应建筑里出现。
  */
 
-import { formatMoney, formatMoneyCompact } from '../core/money';
+import { formatMoney } from '../core/money';
 import { BRANDING, TIME } from '../content/config';
 import type { GameViewModel } from '../app/view';
 import { icon } from './icons';
@@ -226,68 +228,6 @@ export function renderOffice(view: GameViewModel): string {
     <div class="note">
       工资按分钟精确应计，并按区间开始时的生存效率折算；跨月工作时按实际工作时间归属到对应月份。
       上班会同时推进时间，途中行情、贷款计息与月结都会按顺序发生。
-    </div>
-  `;
-}
-
-/* ------------------------------------------------------------------ 住宅 */
-
-export function renderHome(view: GameViewModel): string {
-  const restButtons = TIME.restPresets
-    .map(
-      (preset) =>
-        `<button type="button" class="btn" data-action="rest" data-minutes="${preset.minutes}">休息 ${preset.label}</button>`,
-    )
-    .join('');
-
-  return `
-    <div class="block">
-      <div class="stat-grid">
-        ${stat('每月房租', formatMoneyCompact(view.monthCharge.rent))}
-        ${stat('每月生活费', formatMoneyCompact(view.monthCharge.living))}
-        ${stat('每月应缴合计', view.monthChargeText, { wide: true })}
-        ${stat('当前生活欠款', view.money.debtText, { tone: view.money.debt > 0 ? 'neg' : undefined })}
-        ${stat('已结算月份', `${view.settledCount} 个`, {
-          wide: true,
-          note: view.lastSettledMonth ? `最近结算：${view.lastSettledMonth}` : '尚未结算过',
-        })}
-      </div>
-    </div>
-
-    <div class="block">
-      ${title('休息 · 推进时间')}
-      <div class="actions">
-        ${restButtons}
-        <button type="button" class="btn btn-primary" data-action="sleep">睡到明早 08:00</button>
-      </div>
-      <div class="note" style="margin-top:8px">
-        休息只推进时间、不产生工资。时间会照常跨过行情更新、贷款计息与月度结算节点。
-      </div>
-    </div>
-
-    <div class="note">
-      每月第 ${TIME.calendar.daysPerMonth} 天结束后自动月结：先结清并发放上月工资、偿还旧欠款，
-      再扣本月房租与生活费，最后尝试贷款到期还款。
-    </div>
-    <div class="note warn" style="margin-top:6px">
-      可用资金不足时，未付部分会转为生活欠款并计入负债。首版不做驱逐与游戏结束。
-    </div>
-  `;
-}
-
-/** 只读的住房概览：不在住宅里时说明地点，不提供休息入口。 */
-export function renderHomeBrief(view: GameViewModel): string {
-  return `
-    <div class="block">
-      <div class="stat-grid">
-        ${stat('每月房租', formatMoneyCompact(view.monthCharge.rent))}
-        ${stat('每月生活费', formatMoneyCompact(view.monthCharge.living))}
-        ${stat('每月应缴合计', view.monthChargeText, { wide: true })}
-        ${stat('当前生活欠款', view.money.debtText, { tone: view.money.debt > 0 ? 'neg' : undefined })}
-      </div>
-      <div class="note" style="margin-top:8px">
-        休息与睡觉会推进时间，因此只在住宅（晴川公寓）内提供；本页只显示住房支出。
-      </div>
     </div>
   `;
 }

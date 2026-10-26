@@ -32,7 +32,9 @@ import {
   enterpriseBuildingIdFor,
   findLayoutBuilding,
 } from '../features/city-layout';
+import { deliverHousingUnits } from '../features/real-estate';
 import { liveCityEconomyOf } from './city-statistics';
+import { districtFactorOf } from './real-estate';
 import type { GameState, ReadonlyGameState } from './state';
 
 /**
@@ -201,9 +203,46 @@ export function completeDueProjects(
       });
     }
 
+    // 3) 新区住宅交付：建设完成的**那一刻**把实际新增住宅写入房地产切片一次。
+    //    幂等：按建筑 id 判重，读档与重复调用不会重复交房；不改变 GDP。
+    deliverDistrictHousing(draft, record.districtId, record.completedAtMinute);
+
     completed.push(record);
   }
   return completed;
+}
+
+/**
+ * 把一片城区里的住宅建筑交付为可追踪住宅单元（应用层唯一入口）。
+ *
+ * - 只处理 `kind === 'home'` 的建筑，且单元计划来自配置（`DISTRICT_HOUSING_PLANS`）；
+ * - 交付即开启六个游戏月的玩家优先窗口（保护期从交付时刻起算）；
+ * - 幂等：同一建筑已有单元时返回 0；
+ * - 不登记 GDP、不发钱、不改变人口：交付只是「房子存在了」。
+ */
+export function deliverDistrictHousing(
+  draft: GameState,
+  districtId: string,
+  completedAtMinute: number,
+): number {
+  const district = draft.cityLayout.districts.find((item) => item.id === districtId);
+  if (!district) return 0;
+  const prefix = `${district.templateId}-${district.stage}-`;
+  let created = 0;
+  for (const building of draft.cityLayout.buildings) {
+    if (building.districtId !== districtId) continue;
+    if (building.kind !== 'home') continue;
+    if (!building.id.startsWith(prefix)) continue;
+    created += deliverHousingUnits(draft.realEstate, {
+      districtId,
+      buildingId: building.id,
+      buildingName: building.name,
+      buildingSuffix: building.id.slice(prefix.length),
+      deliveredAtMinute: completedAtMinute,
+      districtFactor: districtFactorOf(districtId),
+    });
+  }
+  return created;
 }
 
 /**

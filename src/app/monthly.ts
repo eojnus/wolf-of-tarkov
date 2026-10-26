@@ -24,7 +24,8 @@ import {
   personalTotal,
   receiveIncome,
 } from '../features/finance';
-import { addDebt, maxRepayable, quoteMonth, reduceDebt } from '../features/living';
+import { addDebt, maxRepayable, reduceDebt } from '../features/living';
+import { monthChargeOf } from './residence';
 import type { GameState, MonthReport } from './state';
 import { trimReports } from './state';
 
@@ -69,7 +70,9 @@ export function settleMonth(state: GameState, info: MonthBoundaryInfo): MonthRep
   }
 
   // 4. 房租与基本生活费
-  const charge = quoteMonth();
+  //    永久居住权已在**报价**环节生效（房租 0），不做事后返款；旧档同样按新口径结算，
+  //    但既有历史报表、流水与历史欠款原样保留，不追溯退款、不重写旧账。
+  const charge = monthChargeOf(state);
   const rentResult = payFromPersonal(state.finance, {
     ...ctx,
     operationId: `rent:${monthKey}`,
