@@ -237,8 +237,10 @@ export class DonutPie {
 
   private setCenter(center: PieCenter): void {
     if (!this.centerLabelEl || !this.centerValueEl || !this.centerSubEl) return;
-    if (this.centerLabelEl.textContent !== center.label) {
-      this.centerLabelEl.textContent = center.label;
+    // 中心文字不能长过内圈：过长的分类名截断，完整名称在图例与提示里
+    const label = center.label.length > 8 ? `${center.label.slice(0, 7)}…` : center.label;
+    if (this.centerLabelEl.textContent !== label) {
+      this.centerLabelEl.textContent = label;
     }
     if (this.centerValueEl.textContent !== center.value) {
       this.centerValueEl.textContent = center.value;
@@ -246,6 +248,14 @@ export class DonutPie {
     const sub = center.sub ?? '';
     this.centerSubEl.textContent = sub;
     this.centerSubEl.style.display = sub ? '' : 'none';
+    this.fitValue(center.value);
+  }
+
+  /** 中心数值可能很长（例如 116 万人）：按位数缩小字号，保证不压到圆环上。 */
+  private fitValue(text: string): void {
+    if (!this.centerValueEl) return;
+    const size = text.length >= 6 ? 15 : text.length >= 5 ? 17 : 19;
+    this.centerValueEl.style.fontSize = `${size}px`;
   }
 
   /** 当前悬停/聚焦的对象；null 表示恢复总览摘要。 */
@@ -261,10 +271,12 @@ export class DonutPie {
       nodes.legend.classList.toggle('is-hot', i === index);
     });
     if (this.centerLabelEl && this.centerValueEl && this.centerSubEl) {
-      this.centerLabelEl.textContent = item.label;
+      this.centerLabelEl.textContent =
+        item.label.length > 8 ? `${item.label.slice(0, 7)}…` : item.label;
       this.centerValueEl.textContent = item.valueText;
       this.centerSubEl.textContent = `占 ${pctText(ratio)}`;
       this.centerSubEl.style.display = '';
+      this.fitValue(item.valueText);
     }
     this.showTip(index, pointer);
   }

@@ -124,7 +124,8 @@ textarea {
 
 .icon {
   flex: none;
-  display: block;
+  display: inline-block;
+  vertical-align: -0.15em;
 }
 
 .num {
@@ -2098,12 +2099,12 @@ select.field {
 .pie-track {
   fill: none;
   stroke: var(--paper-2);
-  stroke-width: 20;
+  stroke-width: 18;
 }
 
 .pie-slice {
   fill: none;
-  stroke-width: 20;
+  stroke-width: 18;
   stroke-linecap: butt;
   transform-box: fill-box;
   transform-origin: center;
@@ -2120,7 +2121,7 @@ select.field {
 
 .pie-center-label {
   fill: var(--ink-3);
-  font-size: 12px;
+  font-size: 11px;
   text-anchor: middle;
 }
 
@@ -2148,6 +2149,8 @@ select.field {
   font-size: 12.5px;
   min-width: 0;
   flex: 1 1 220px;
+  /* 图例不拉满整行：太宽的数值列会让人找不到对应的扇区 */
+  max-width: 440px;
 }
 
 .pie-legend li {
