@@ -32,7 +32,7 @@ import type {
 import { GameWindow, type NavGroup, type WindowChrome } from './game-window';
 import type { IconName } from './icons';
 import { renderHome, renderHomeBrief, renderPause } from './life-panels';
-import { paintStockCharts, type ChartInput } from './stock-chart';
+import { destroyStockCharts, paintStockCharts, type ChartInput } from './stock-chart';
 
 export type PanelId =
   | 'bank'
@@ -599,6 +599,7 @@ export class PanelManager {
     this.active = ENTRY_SECTION[id];
 
     if (this.personal.isMounted) this.personal.teardown();
+    destroyStockCharts(this.win.content);
     if (this.win.isMounted) this.win.unmount();
     this.root.innerHTML = '';
 
@@ -620,6 +621,7 @@ export class PanelManager {
     this.active = null;
     this.deferredView = null;
     this.personal.teardown();
+    destroyStockCharts(this.win.content);
     this.win.unmount();
     this.root.innerHTML = '';
   }
@@ -724,12 +726,14 @@ export class PanelManager {
     if (spec.owner === 'personal') {
       const section = spec.personal ?? 'overview';
       if (!this.personal.isMounted) {
+        destroyStockCharts(content);
         this.personal.mount(content, this.win.floatLayer);
       }
       this.personal.setScope(section, BIZ_SUB[spec.key]);
       return;
     }
     if (this.personal.isMounted) this.personal.teardown();
+    destroyStockCharts(content);
     content.innerHTML = this.bodyHtml(spec, view);
     this.paintCharts(view);
   }
@@ -791,6 +795,9 @@ export class PanelManager {
       if (key && node.childElementCount > 0) preserved.set(key, node);
     }
 
+    // Keep reusable charts alive; dispose only nodes that are actually removed.
+    for (const node of preserved.values()) node.remove();
+    destroyStockCharts(content);
     content.innerHTML = this.bodyHtml(spec, view);
 
     for (const slot of content.querySelectorAll<HTMLElement>('[data-preserve]')) {

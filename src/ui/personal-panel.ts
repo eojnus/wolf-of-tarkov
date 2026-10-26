@@ -36,7 +36,7 @@ import {
 } from './business-panel';
 import { icon } from './icons';
 import { renderBank, renderOffice } from './life-panels';
-import { paintStockCharts } from './stock-chart';
+import { destroyStockCharts, paintStockCharts } from './stock-chart';
 import { renderInventorySection } from './inventory-panel';
 import {
   patchStockWindowNumbers,
@@ -285,7 +285,10 @@ export class PersonalPanel {
   /** 关闭整个界面：销毁 DOM，但保留浮窗的打开状态与位置。 */
   teardown(): void {
     this.windows.detach();
-    if (this.root) this.root.innerHTML = '';
+    if (this.root) {
+      destroyStockCharts(this.root);
+      this.root.innerHTML = '';
+    }
     this.root = null;
     this.floatEl = null;
   }
@@ -673,6 +676,7 @@ export class PersonalPanel {
     const next = template.content.firstElementChild;
     const current = container.firstElementChild;
     if (!next || !current) {
+      destroyStockCharts(container);
       container.innerHTML = html;
       return;
     }
@@ -687,6 +691,7 @@ export class PersonalPanel {
       if (item.open) openDetails.add(index);
     });
 
+    destroyStockCharts(container);
     container.innerHTML = html;
 
     const nextScroller = container.querySelector<HTMLElement>('.pp-scroll');
