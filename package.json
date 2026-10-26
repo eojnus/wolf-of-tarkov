@@ -1,0 +1,21 @@
+{
+  "name": "city-wealth-sim",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "现代城市财富模拟游戏 - 首版最小基线",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5"
+  }
+}

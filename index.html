@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>塔科夫之狼 · 现代城市财富模拟</title>
+  </head>
+  <body>
+    <div id="game-root">
+      <div id="viewport"></div>
+      <div id="hud-layer"></div>
+      <div id="panel-layer"></div>
+      <div id="toast-layer" aria-live="polite"></div>
+      <div id="boot-screen">
+        <div class="boot-card">
+          <h1>塔科夫之狼</h1>
+          <p class="boot-sub">现代城市财富模拟 · v0.3.3</p>
+          <div class="boot-actions">
+            <button id="boot-new" type="button" class="btn btn-primary">开始新游戏</button>
+            <button id="boot-load" type="button" class="btn">读取存档</button>
+          </div>
+          <p class="boot-hint" id="boot-hint">正在初始化…</p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

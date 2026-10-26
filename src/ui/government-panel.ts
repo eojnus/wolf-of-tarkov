@@ -1,0 +1,922 @@
+/**
+ * 政府面板 —— 人口统计、政治人口、政府结构、选举与赞助、历史记录。
+ *
+ * 界面纪律：
+ *  - 只消费 app/government-view 的只读视图，不直接读 features；
+ *  - 草稿（赞助金额、当前栏目）只存在内存里，不写 GameState、不进存档；
+ *  - 面板打开时模拟继续：刷新不重建输入框，结构不变时只更新数值节点；
+ *  - 图表用原生 SVG 绘制（不引入图表库），并与文字人数、百分比同时出现。
+ */
+
+import { formatMoney } from '../core/money';
+import { CANDIDATES, type CandidateId } from '../content/government';
+import type { GovernmentPanelView } from '../app/government-view';
+import type { CityEconomyPanelView } from '../app/city-view';
+
+export type GovernmentTab =
+  | 'population'
+  | 'politics'
+  | 'structure'
+  | 'campaign'
+  | 'economy'
+  | 'history';
+
+export interface GovernmentUiHandlers {
+  /** 提交一笔赞助：金额单位为分。返回命令结果供界面提示。 */
+  onSponsor(candidateId: CandidateId, amountCents: number, requestId: string): {
+    ok: boolean;
+    message: string | null;
+  };
+}
+
+const TABS: Array<{ id: GovernmentTab; label: string }> = [
+  { id: 'population', label: '人口统计' },
+  { id: 'politics', label: '政治人口' },
+  { id: 'structure', label: '政府结构' },
+  { id: 'campaign', label: '选举与赞助' },
+  { id: 'economy', label: '城市经济' },
+  { id: 'history', label: '历史记录' },
+];
+
+const PIE_COLORS = ['#64c0f0', '#f0c46a', '#67d99b', '#b58fd6', '#f08c8c'];
+
+function esc(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** 圆环饼图：各段面积严格按比例绘制，中心显示总数。 */
+function pieChart(
+  items: Array<{ label: string; value: number; ratio: number; text: string }>,
+  centerLabel: string,
+  centerValue: string,
+): string {
+  const radius = 44;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+  const slices = items
+    .map((item, index) => {
+      const ratio = Math.max(0, item.ratio);
+      const length = circumference * ratio;
+      const dash = `${length.toFixed(3)} ${(circumference - length).toFixed(3)}`;
+      const shift = (-offset).toFixed(3);
+      offset += length;
+      const color = PIE_COLORS[index % PIE_COLORS.length]!;
+      return `<circle class="pie-slice" cx="60" cy="60" r="${radius}" stroke="${color}" stroke-dasharray="${dash}" stroke-dashoffset="${shift}"></circle>`;
+    })
+    .join('');
+  const legend = items
+    .map(
+      (item, index) => `
+      <li>
+        <span class="dot" style="background:${PIE_COLORS[index % PIE_COLORS.length]}"></span>
+        <span>${esc(item.label)}</span>
+        <b>${esc(item.text)}</b>
+        <em>${(Math.max(0, item.ratio) * 100).toFixed(1)}%</em>
+      </li>`,
+    )
+    .join('');
+  return `
+    <div class="pie-wrap">
+      <svg class="pie-chart" viewBox="0 0 120 120" role="img" aria-label="${esc(centerLabel)}">
+        <circle class="pie-track" cx="60" cy="60" r="${radius}"></circle>
+        ${slices}
+        <text class="pie-center-label" x="60" y="54">${esc(centerLabel)}</text>
+        <text class="pie-center-value" x="60" y="74">${esc(centerValue)}</text>
+      </svg>
+      <ul class="pie-legend">${legend}</ul>
+    </div>`;
+}
+
+/** 阶层占比趋势：最近 12 个月的堆叠柱。 */
+function trendChart(
+  points: Array<{ monthKey: string; low: number; mid: number; high: number }>,
+): string {
+  if (points.length === 0) return '';
+  const width = 560;
+  const height = 150;
+  const padding = 8;
+  const slot = (width - padding * 2) / points.length;
+  const barWidth = Math.min(26, slot * 0.62);
+  const bars = points
+    .map((point, index) => {
+      const x = padding + slot * index + (slot - barWidth) / 2;
+      const low = Math.max(0, point.low);
+      const mid = Math.max(0, point.mid);
+      const high = Math.max(0, point.high);
+      const yLow = height - padding - low * (height - padding * 2);
+      const yMid = height - padding - (low + mid) * (height - padding * 2);
+      const yHigh = height - padding - (low + mid + high) * (height - padding * 2);
+      return `
+        <rect x="${x.toFixed(1)}" y="${yHigh.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(0, high * (height - padding * 2)).toFixed(1)}" fill="${PIE_COLORS[2]}"></rect>
+        <rect x="${x.toFixed(1)}" y="${yMid.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(0, mid * (height - padding * 2)).toFixed(1)}" fill="${PIE_COLORS[1]}"></rect>
+        <rect x="${x.toFixed(1)}" y="${yLow.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(0, low * (height - padding * 2)).toFixed(1)}" fill="${PIE_COLORS[0]}"></rect>
+        <text x="${(x + barWidth / 2).toFixed(1)}" y="${height - 1}" text-anchor="middle" font-size="9" fill="var(--text-faint)">${esc(point.monthKey.slice(2))}</text>`;
+    })
+    .join('');
+  return `
+    <svg class="gov-trend" viewBox="0 0 ${width} ${height}" role="img" aria-label="最近 12 个月阶层占比趋势">
+      ${bars}
+    </svg>
+    <div class="gov-legend-row">
+      <span><i class="dot" style="background:${PIE_COLORS[0]}"></i>低</span>
+      <span><i class="dot" style="background:${PIE_COLORS[1]}"></i>中</span>
+      <span><i class="dot" style="background:${PIE_COLORS[2]}"></i>高</span>
+    </div>`;
+}
+
+function kv(label: string, value: string, live?: string): string {
+  const liveAttr = live ? ` data-live="${live}"` : '';
+  return `<div class="kv"><span class="k">${esc(label)}</span><span class="v num"${liveAttr}>${esc(value)}</span></div>`;
+}
+
+export class GovernmentPanel {
+  private tab: GovernmentTab = 'population';
+  /** 赞助草稿：候选人 id → 输入文本（只存在内存）。 */
+  private drafts: Record<string, string> = {};
+  /** 待重试的赞助请求：同一笔重试复用同一个操作 id，不会重复扣款。 */
+  private pending: { candidateId: CandidateId; amountCents: number; requestId: string } | null = null;
+
+  constructor(
+    private readonly view: () => GovernmentPanelView,
+    private readonly handlers: GovernmentUiHandlers,
+    private readonly cityView: () => CityEconomyPanelView,
+  ) {}
+
+  /** 新游戏 / 读档后清空草稿（不进存档）。 */
+  resetSession(): void {
+    this.tab = 'population';
+    this.drafts = {};
+    this.pending = null;
+  }
+
+  /** 面板主体 HTML。 */
+  renderBody(): string {
+    const view = this.view();
+    return `
+      <div class="gov-tabs">
+        ${TABS.map(
+          (item) => `<button type="button" class="btn btn-sm${item.id === this.tab ? ' is-active' : ''}" data-action="gov-tab" data-tab="${item.id}">${esc(item.label)}</button>`,
+        ).join('')}
+      </div>
+      <div class="gov-body">${this.renderTab(view)}</div>
+    `;
+  }
+
+  /**
+   * 只更新数值/状态节点（面板打开且正在输入时不重建 DOM）。
+   *
+   * 输入期间除候选人资源与支持率外，阶段、倒计时、合格/参与人数、执政状态与
+   * 「赞助按钮是否可用」也要实时反映；赞助记录表不含输入框，用内容指纹原地替换。
+   */
+  patchLive(root: HTMLElement): void {
+    const view = this.view();
+    const values = this.liveValues(view);
+    for (const el of root.querySelectorAll<HTMLElement>('[data-live]')) {
+      const key = el.dataset.live;
+      if (!key) continue;
+      const text = values[key];
+      if (text === undefined) continue;
+      if (el.textContent !== text) el.textContent = text;
+    }
+    for (const el of root.querySelectorAll<HTMLElement>('[data-live-disabled]')) {
+      if (el.dataset.liveDisabled !== 'gov.sponsor') continue;
+      const disabled = view.campaign.sponsorDisabled;
+      if (el instanceof HTMLButtonElement && el.disabled !== disabled) el.disabled = disabled;
+    }
+    this.patchSponsorshipRecords(root, view);
+    this.patchCharts(root, view);
+  }
+
+  /** 人口饼图（总人口、各层人数与占比同源，最大余数法取整）。 */
+  private populationPieHtml(view: GovernmentPanelView): string {
+    const pop = view.population;
+    return pieChart(
+      pop.classes.map((row) => ({
+        label: row.name,
+        value: row.people,
+        ratio: row.ratio,
+        text: row.peopleText,
+      })),
+      '总人口',
+      `${pop.total.toLocaleString('en-US')}`,
+    );
+  }
+
+  /** 图表不含输入框：结构不变时按内容指纹原地替换，不打断焦点与滚动。 */
+  private patchCharts(root: HTMLElement, view: GovernmentPanelView): void {
+    const pieNode = root.querySelector<HTMLElement>('[data-el="gov-pop-pie"]');
+    if (pieNode) {
+      const signature = view.population.classes
+        .map((row) => `${row.people}:${row.ratio}`)
+        .join('|');
+      if (pieNode.dataset.signature !== signature) {
+        pieNode.dataset.signature = signature;
+        pieNode.innerHTML = this.populationPieHtml(view);
+      }
+    }
+    const trendNode = root.querySelector<HTMLElement>('[data-el="gov-trend"]');
+    if (trendNode) {
+      const signature = view.population.trend
+        .map((point) => `${point.monthKey}:${point.low}:${point.mid}:${point.high}`)
+        .join('|');
+      if (trendNode.dataset.signature !== signature) {
+        trendNode.dataset.signature = signature;
+        trendNode.innerHTML =
+          trendChart(view.population.trend) || '<div class="empty">尚无趋势数据</div>';
+      }
+    }
+  }
+
+  /** 赞助记录表：结构固定、不含输入框，按内容指纹原地更新。 */
+  private patchSponsorshipRecords(root: HTMLElement, view: GovernmentPanelView): void {
+    const node = root.querySelector<HTMLElement>('[data-el="gov-sponsor-records"]');
+    if (!node) return;
+    const signature = view.campaign.records
+      .map((row) => `${row.candidateName}|${row.amountText}|${row.atText}`)
+      .join('~');
+    if (node.dataset.signature === signature) return;
+    node.dataset.signature = signature;
+    node.innerHTML = this.renderSponsorshipRows(view);
+  }
+
+  private liveValues(view: GovernmentPanelView): Record<string, string> {
+    const values: Record<string, string> = {
+      'gov.countdown': view.campaign.countdownText,
+      'gov.deadline': view.campaign.deadlineText,
+      'gov.balance': view.campaign.availableBalanceText,
+      'gov.participants': view.campaign.expectedParticipantsText,
+      'gov.turnout': view.campaign.turnoutText,
+      'gov.eligible': view.campaign.eligibleText,
+      'gov.phase': view.campaign.phaseText,
+      'gov.total': view.population.totalText,
+      'gov.holder': view.structure.holderName,
+      'gov.since': view.structure.holderSinceText,
+      'gov.termLeft': view.structure.termLeftText,
+      'gov.policy': view.structure.policyLabel,
+    };
+    for (const candidate of view.campaign.candidates) {
+      const prefix = `gov.${candidate.id}`;
+      values[`${prefix}.support`] = candidate.supportText;
+      values[`${prefix}.expected`] = candidate.expectedVotesText;
+      values[`${prefix}.advertising`] = candidate.advertisingText;
+      values[`${prefix}.resources`] =
+        `${candidate.baseText} / ${candidate.sponsoredText} / ${candidate.usedText} / ${candidate.remainingText}`;
+      values[`${prefix}.ability`] = candidate.campaignAbilityText;
+    }
+    // 城市经济栏目同样在输入期间实时更新（只替换数值节点，不重建输入框）
+    const city = this.cityView();
+    values['city.gdp'] = city.economy.gdpText;
+    values['city.settled'] = city.economy.settledOutputText;
+    values['city.pending'] = city.economy.pendingOutputText;
+    values['city.month'] = city.economy.monthOutputText;
+    values['city.index'] = city.economy.indexText;
+    values['city.adjust'] = city.economy.stockAdjustText;
+    return values;
+  }
+
+  /** 处理面板内的点击。返回 true 表示已处理。 */
+  handleAction(action: string, target: HTMLElement): boolean {
+    if (action === 'gov-tab') {
+      const tab = target.dataset.tab as GovernmentTab | undefined;
+      if (tab && TABS.some((item) => item.id === tab)) {
+        this.tab = tab;
+        return true;
+      }
+      return false;
+    }
+    if (action === 'gov-sponsor') {
+      const candidateId = target.dataset.candidate as CandidateId | undefined;
+      if (!candidateId) return false;
+      this.submitSponsor(candidateId, target);
+      return true;
+    }
+    return false;
+  }
+
+  /** 读取输入草稿。 */
+  draftOf(candidateId: CandidateId): string {
+    return this.drafts[candidateId] ?? '';
+  }
+
+  /**
+   * 输入事件：实时把赞助金额存进内存草稿。
+   *
+   * 草稿只存在于这个组件实例里，不写 `GameState`、不进存档；
+   * 切换栏目、关闭再打开都按会话规则保留，新游戏/读档由 `resetSession` 清空。
+   */
+  handleInput(target: HTMLInputElement): boolean {
+    const name = target.getAttribute('data-el');
+    if (!name || !name.startsWith('gov-amount-')) return false;
+    const candidateId = name.slice('gov-amount-'.length);
+    if (!CANDIDATES.some((candidate) => candidate.id === candidateId)) return false;
+    this.drafts[candidateId] = target.value;
+    return true;
+  }
+
+  private submitSponsor(candidateId: CandidateId, target: HTMLElement): void {
+    const input = target.closest('.gov-sponsor-row')?.querySelector<HTMLInputElement>(
+      `input[data-el="gov-amount-${candidateId}"]`,
+    );
+    const raw = (input?.value ?? this.drafts[candidateId] ?? '').trim();
+    this.drafts[candidateId] = raw;
+    const yuan = Number(raw);
+    if (!raw || !Number.isFinite(yuan) || yuan <= 0) {
+      this.handlers.onSponsor(candidateId, 0, this.requestIdFor(candidateId, 0));
+      return;
+    }
+    const amountCents = Math.round(yuan * 100);
+    const view = this.view();
+    const confirmed = window.confirm(
+      `确认赞助 ${view.campaign.candidates.find((row) => row.id === candidateId)?.name ?? '候选人'} ${formatMoney(amountCents)}？\n\n` +
+        '· 资金仅来自你的个人存款（不动用现金、企业资金或贷款）\n' +
+        '· **不可退款**，也不兑换现金\n' +
+        `· ${view.campaign.countdownText}，届末未使用的竞选资源直接失效\n` +
+        '· 赞助只提高宣传影响，不购买固定选票，也不保证当选\n\n' +
+        '确认后立即从个人存款扣款。',
+    );
+    if (!confirmed) return;
+    const outcome = this.handlers.onSponsor(candidateId, amountCents, this.requestIdFor(candidateId, amountCents));
+    if (outcome.ok) {
+      this.pending = null;
+      this.drafts[candidateId] = '';
+    }
+  }
+
+  /** 同一笔赞助的重试复用同一个操作 id，避免重复扣款。 */
+  private requestIdFor(candidateId: CandidateId, amountCents: number): string {
+    if (
+      this.pending &&
+      this.pending.candidateId === candidateId &&
+      this.pending.amountCents === amountCents
+    ) {
+      return this.pending.requestId;
+    }
+    const random =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const requestId = `sponsor:${random}`;
+    this.pending = { candidateId, amountCents, requestId };
+    return requestId;
+  }
+
+  /* ------------------------------------------------------------ 栏目 */
+
+  private renderTab(view: GovernmentPanelView): string {
+    switch (this.tab) {
+      case 'population':
+        return this.renderPopulation(view);
+      case 'politics':
+        return this.renderPolitics(view);
+      case 'structure':
+        return this.renderStructure(view);
+      case 'campaign':
+        return this.renderCampaign(view);
+      case 'economy':
+        return this.renderEconomy();
+      case 'history':
+        return this.renderHistory(view);
+    }
+  }
+
+  private renderPopulation(view: GovernmentPanelView): string {
+    const pop = view.population;
+    const pie = this.populationPieHtml(view);
+    const pieSignature = pop.classes.map((row) => `${row.people}:${row.ratio}`).join('|');
+    const trendSignature = pop.trend
+      .map((point) => `${point.monthKey}:${point.low}:${point.mid}:${point.high}`)
+      .join('|');
+    const classRows = pop.classes
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.name)}</td>
+          <td class="num">${esc(row.peopleText)}</td>
+          <td class="num">${esc(row.ratioText)}</td>
+        </tr>`,
+      )
+      .join('');
+    const flowRows = pop.flows
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.label)}</td>
+          <td class="num">${esc(row.peopleText)}</td>
+        </tr>`,
+      )
+      .join('');
+    return `
+      <div class="block">
+        <div class="block-title">城市人口</div>
+        <div class="stat-grid">
+          <div class="stat">
+            <div class="stat-label">总人口</div>
+            <div class="stat-value num" data-live="gov.total">${esc(pop.totalText)}</div>
+            <div class="stat-note">${esc(pop.growthRateText)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">结算状态</div>
+            <div class="stat-value">${esc(pop.settledMonthKey ?? '—')}</div>
+            <div class="stat-note">${esc(pop.settledNote)}</div>
+          </div>
+        </div>
+        ${`<div data-el="gov-pop-pie" data-signature="${esc(pieSignature)}">${pie}</div>`}
+        <table class="gov-table">
+          <thead><tr><th>经济阶层</th><th>人数</th><th>占比</th></tr></thead>
+          <tbody>${classRows}</tbody>
+        </table>
+      </div>
+
+      <div class="block">
+        <div class="block-title">本月结算（已结算）</div>
+        <div class="kv-list">
+          ${kv('自然增长', pop.growthText)}
+          ${kv('阶层流动合计', pop.flowTotalText)}
+          ${kv('总人口变化', pop.netText)}
+          ${kv('经营影响（J/I/P）', pop.businessText)}
+          ${kv('股市影响', pop.marketText)}
+          ${kv('市场月回报', pop.marketReturnText)}
+          ${kv('涨跌覆盖比例', pop.marketCoverageText)}
+        </div>
+        <table class="gov-table">
+          <thead><tr><th>月度转移</th><th>人数</th></tr></thead>
+          <tbody>${flowRows || '<tr><td colspan="2">尚无已结算记录</td></tr>'}</tbody>
+        </table>
+        <div class="note">${esc(pop.sampleNote)}</div>
+        ${pop.incompleteNote ? `<div class="note warn">${esc(pop.incompleteNote)}</div>` : ''}
+      </div>
+
+      <div class="block">
+        <div class="block-title">最近 12 个月阶层占比趋势</div>
+        <div data-el="gov-trend" data-signature="${esc(trendSignature)}">${trendChart(pop.trend) || '<div class="empty">尚无趋势数据</div>'}</div>
+        <div class="note">柱子自下而上为低、中、高三层占比；右侧文字为各月占比，与柱子面积同源。</div>
+      </div>
+    `;
+  }
+
+  private renderPolitics(view: GovernmentPanelView): string {
+    const politics = view.politics;
+    const rows = politics.groups
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.name)}</td>
+          <td class="num">${esc(row.peopleText)}</td>
+          <td class="num">${esc(row.ratioText)}</td>
+          <td class="num">${esc(row.turnoutText)}</td>
+          <td class="num">${esc(row.satisfactionText)}</td>
+          <td class="num">${esc(row.support.map((item) => `${item.name} ${item.ratioText}`).join(' · '))}</td>
+        </tr>`,
+      )
+      .join('');
+    const marginRows = [...politics.incomeMargins, ...politics.interestMargins]
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.name)}</td>
+          <td class="num">${esc(row.peopleText)}</td>
+          <td class="num">${esc(row.ratioText)}</td>
+          <td class="num">${esc(row.satisfactionText)}</td>
+          <td class="num">${row.consecutiveMonths} / 3</td>
+        </tr>`,
+      )
+      .join('');
+    return `
+      <div class="block">
+        <div class="block-title">交叉政治群体（3 收入 × 4 利益 = 12 格）</div>
+        <div class="stat-grid">
+          <div class="stat">
+            <div class="stat-label">全市人口加权平均满意度</div>
+            <div class="stat-value num">${esc(politics.averageSatisfactionText)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">提前选举监测</div>
+            <div class="stat-value">${esc(politics.cityMonthsText)}</div>
+            <div class="stat-note">${esc(politics.protectionText)}</div>
+          </div>
+        </div>
+        <table class="gov-table">
+          <thead>
+            <tr><th>群体</th><th>人数</th><th>占比</th><th>参与倾向</th><th>满意度</th><th>群体内支持率</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="note">${esc(politics.note)}</div>
+        <div class="note">全人口加权支持率（按群体比例，不含投票率）：${esc(politics.summaryText)}</div>
+      </div>
+      <div class="block">
+        <div class="block-title">主要群体监测（3 收入边际 + 4 利益边际）</div>
+        <table class="gov-table">
+          <thead><tr><th>主要群体</th><th>人数</th><th>占人口</th><th>满意度</th><th>连续低满意度月</th></tr></thead>
+          <tbody>${marginRows}</tbody>
+        </table>
+        <div class="note">${esc(politics.earlyElectionNote)}</div>
+        <div class="note">提前选举不会因不同群体轮流不满而累计成同一个「三个月」：每个主要群体有独立计数器。</div>
+      </div>
+      <div class="block">
+        <div class="block-title">群体画像</div>
+        ${politics.groups
+          .map((row) => `<div class="note">${esc(row.name)}：${esc(row.note)}</div>`)
+          .join('')}
+      </div>
+    `;
+  }
+
+  private renderStructure(view: GovernmentPanelView): string {
+    const structure = view.structure;
+    return `
+      <div class="block">
+        <div class="block-title">${esc(structure.institution)}</div>
+        <div class="kv-list">
+          ${kv('职位', structure.officeTitle)}
+          ${kv('执政人', structure.holderName, 'gov.holder')}
+          ${kv('上任时间', structure.holderSinceText, 'gov.since')}
+          ${kv('任期', structure.termLeftText, 'gov.termLeft')}
+          ${kv('任期标识', structure.termIdText)}
+          ${kv('执政方向', structure.directionText)}
+          ${kv('任期来源', structure.sourceText)}
+          ${kv('当前政策', structure.policyLabel, 'gov.policy')}
+        </div>
+        ${
+          structure.caretaker
+            ? '<div class="note warn">当前为中性过渡负责人：不享有任何候选人的产业政策，也不获得现任竞选加分。</div>'
+            : ''
+        }
+        <div class="note">${esc(structure.note)}</div>
+      </div>
+      <div class="block">
+        <div class="block-title">政策效果</div>
+        <div class="stat-grid">
+          ${structure.policyEffects
+            .map(
+              (row) => `
+            <div class="stat">
+              <div class="stat-label">${esc(row.label)}</div>
+              <div class="stat-value num">${esc(row.value)}</div>
+            </div>`,
+            )
+            .join('')}
+        </div>
+        <div class="note">政策由选举结果产生，只对生效区间内新发生的经营事项生效；企业与 AI 适用同一套规则。</div>
+      </div>
+    `;
+  }
+
+  private renderSponsorshipRows(view: GovernmentPanelView): string {
+    const records = view.campaign.records
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.candidateName)}</td>
+          <td class="num">${esc(row.amountText)}</td>
+          <td>${esc(row.atText)}</td>
+        </tr>`,
+      )
+      .join('');
+    return records || '<tr><td colspan="3">还没有赞助记录</td></tr>';
+  }
+
+  private renderCampaign(view: GovernmentPanelView): string {
+    const campaign = view.campaign;
+    const candidateRows = campaign.candidates
+      .map((row) => {
+        const prefix = `gov.${row.id}`;
+        return `
+        <div class="gov-candidate">
+          <div class="gov-candidate-head">
+            <span class="gov-candidate-name">${esc(row.name)}</span>
+            <span class="badge">${esc(row.platform)}</span>
+          </div>
+          <div class="kv-list">
+            ${kv('执政能力', row.policyLabel)}
+            ${kv('候选能力', row.campaignAbilityText, `${prefix}.ability`)}
+            ${kv('全人口加权支持率', row.supportText, `${prefix}.support`)}
+            ${kv('预计有效票', row.expectedVotesText, `${prefix}.expected`)}
+            ${kv('宣传影响', row.advertisingText, `${prefix}.advertising`)}
+            ${kv('资源（基础/已赞助/已使用/剩余）', `${row.baseText} / ${row.sponsoredText} / ${row.usedText} / ${row.remainingText}`, `${prefix}.resources`)}
+          </div>
+          <div class="gov-sponsor-row">
+            <input
+              class="field"
+              type="number"
+              min="1"
+              step="1"
+              placeholder="赞助金额（元）"
+              data-el="gov-amount-${row.id}"
+              value="${esc(this.draftOf(row.id))}"
+            />
+            <button type="button" class="btn btn-sm btn-primary" data-action="gov-sponsor" data-candidate="${row.id}" data-live-disabled="gov.sponsor"${campaign.sponsorDisabled ? ' disabled' : ''}>赞助</button>
+          </div>
+        </div>`;
+      })
+      .join('');
+    return `
+      <div class="block">
+        <div class="block-title">竞选状态</div>
+        <div class="stat-grid">
+          <div class="stat">
+            <div class="stat-label">阶段</div>
+            <div class="stat-value" data-live="gov.phase">${esc(campaign.phaseText)}</div>
+            <div class="stat-note" data-live="gov.deadline">投票时刻 ${esc(campaign.deadlineText)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">倒计时</div>
+            <div class="stat-value num" data-live="gov.countdown">${esc(campaign.countdownText)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">合格人数</div>
+            <div class="stat-value num" data-live="gov.eligible">${esc(campaign.eligibleText)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">预计参与</div>
+            <div class="stat-value num" data-live="gov.participants">${esc(campaign.expectedParticipantsText)}</div>
+            <div class="stat-note">预计投票率 <span data-live="gov.turnout">${esc(campaign.turnoutText)}</span></div>
+          </div>
+        </div>
+        ${
+          campaign.lowTurnout
+            ? '<div class="note warn">预计投票率偏低：只要存在有效票，结果仍然有效，界面会保留提示。</div>'
+            : ''
+        }
+      </div>
+
+      <div class="block">
+        <div class="block-title">候选人</div>
+        ${candidateRows}
+        <div class="note">${esc(campaign.sponsorNote)}</div>
+        <div class="note">可用个人存款：<span class="num" data-live="gov.balance">${esc(campaign.availableBalanceText)}</span></div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">我的赞助记录</div>
+        <table class="gov-table">
+          <thead><tr><th>候选人</th><th>金额</th><th>时间</th></tr></thead>
+          <tbody data-el="gov-sponsor-records" data-signature="${esc(
+            campaign.records.map((row) => `${row.candidateName}|${row.amountText}|${row.atText}`).join('~'),
+          )}">${this.renderSponsorshipRows(view)}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  private renderHistory(view: GovernmentPanelView): string {
+    const history = view.history;
+    const electionRows = history.elections
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.termText)}</td>
+          <td>${esc(row.atText)}</td>
+          <td class="num">${esc(row.populationText)}</td>
+          <td class="num">${esc(row.eligibleText)}</td>
+          <td class="num">${esc(row.participantsText)}</td>
+          <td>${esc(row.votesText)}</td>
+          <td>${esc(row.winnerText)}</td>
+        </tr>`,
+      )
+      .join('');
+    const termRows = history.terms
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.name)}</td>
+          <td class="num">${esc(row.startText)}</td>
+          <td class="num">${esc(row.endText)}</td>
+          <td>${esc(row.directionText)}</td>
+          <td>${esc(row.sourceText)}</td>
+          <td>${esc(row.effectsText)}</td>
+          <td>${esc(row.note)}</td>
+        </tr>`,
+      )
+      .join('');
+    return `
+      <div class="block">
+        <div class="block-title">历届选举</div>
+        <table class="gov-table">
+          <thead>
+            <tr><th>届次</th><th>时间</th><th>投票时人口</th><th>合格人数</th><th>参与人数</th><th>票数</th><th>当选</th></tr>
+          </thead>
+          <tbody>${electionRows || `<tr><td colspan="7">${esc(history.emptyText)}</td></tr>`}</tbody>
+        </table>
+        ${
+          history.elections.some((row) => row.tieNote)
+            ? `<div class="note">平票处理：${esc(
+                history.elections.find((row) => row.tieNote)?.tieNote ?? '',
+              )}</div>`
+            : ''
+        }
+      </div>
+      <div class="block">
+        <div class="block-title">任职与政策记录</div>
+        <table class="gov-table">
+          <thead>
+            <tr><th>负责人</th><th>上任</th><th>离任</th><th>方向</th><th>来源</th><th>政策效果快照</th><th>说明</th></tr>
+          </thead>
+          <tbody>${termRows || '<tr><td colspan="7">暂无记录</td></tr>'}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  /**
+   * 城市经济栏目：GDP 三部分、实时待结算、股市指数与调整值、月度趋势、
+   * 产业经营产出占比、人口与政治概览、可模拟企业样本、建设阶段与逻辑地图。
+   * 只消费 `CityEconomyPanelView`，不自己计算任何数值。
+   */
+  private renderEconomy(): string {
+    const city = this.cityView();
+    const economy = city.economy;
+    const industryPie =
+      economy.industries.length > 0
+        ? pieChart(
+            economy.industries.map((row) => ({
+              label: row.label,
+              value: row.ratio,
+              ratio: row.ratio,
+              text: row.centsText,
+            })),
+            '本月产出',
+            economy.monthOutputText,
+          )
+        : '<div class="empty">尚无已结算经营产出</div>';
+    const trendRows = economy.trend
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.monthKey)}</td>
+          <td class="num">${esc(row.gdpText)}</td>
+          <td class="num">${esc(row.outputText)}</td>
+          <td class="num">${esc(row.indexText)}</td>
+        </tr>`,
+      )
+      .join('');
+    const projectRows = city.development.projects
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.stageText)}</td>
+          <td>${esc(row.directionText)}</td>
+          <td>${esc(row.statusText)}</td>
+          <td class="num">${esc(row.completeText)}</td>
+          <td>${esc(row.note)}</td>
+        </tr>`,
+      )
+      .join('');
+    const completionRows = city.development.completions
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.districtText)}</td>
+          <td>${esc(row.directionText)}</td>
+          <td class="num">${esc(row.completedText)}</td>
+        </tr>`,
+      )
+      .join('');
+    const districtRows = city.territory.districts
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.name)}</td>
+          <td>${esc(row.directionText)}</td>
+          <td class="num">${esc(row.completedText)}</td>
+          <td class="num">${esc(row.buildingCountText)}</td>
+        </tr>`,
+      )
+      .join('');
+    return `
+      <div class="block">
+        <div class="block-title">实时游戏 GDP（发展指标，不是现金）</div>
+        <div class="stat-grid">
+          <div class="stat">
+            <div class="stat-label">实时游戏 GDP</div>
+            <div class="stat-value num" data-live="city.gdp">${esc(economy.gdpText)}</div>
+            <div class="stat-note">${esc(economy.compositionText)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">开局基础 GDP</div>
+            <div class="stat-value num">${esc(economy.baseGdpText)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">累计经营产出</div>
+            <div class="stat-value num">${esc(economy.cumulativeOutputText)}</div>
+            <div class="stat-note">
+              <span data-live="city.settled">${esc(economy.settledOutputText)}</span> ·
+              <span data-live="city.pending">${esc(economy.pendingOutputText)}</span>
+            </div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">本月新增经营产出</div>
+            <div class="stat-value num" data-live="city.month">${esc(economy.monthOutputText)}</div>
+          </div>
+        </div>
+        <div class="kv-list">
+          ${kv('全市场指数', economy.indexText, 'city.index')}
+          ${kv('指数样本', economy.indexNote)}
+          ${kv('股市权重口径', economy.stockWeightText)}
+          ${kv('当前股市调整值', economy.stockAdjustText, 'city.adjust')}
+        </div>
+        <div class="note">${esc(economy.notes)}</div>
+        ${!economy.indexValid ? '<div class="note warn">指数样本不足：保持上一观察值并如实标注，不会静默回到 100。</div>' : ''}
+      </div>
+
+      <div class="block">
+        <div class="block-title">本月已结算经营产出的产业拆分</div>
+        ${industryPie}
+        <div class="note">${esc(economy.industryNote)}</div>
+        <div class="note">产业占比只按「本月已结算产出」拆分（与下方月度快照同尺度）；累计产出与 GDP 在上一栏单独展示。</div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">最近月度产出与 GDP 快照</div>
+        <table class="gov-table">
+          <thead><tr><th>月份</th><th>GDP</th><th>本月经营产出</th><th>指数</th></tr></thead>
+          <tbody>${trendRows || '<tr><td colspan="4">尚无完整月度快照（第一个月结后出现）</td></tr>'}</tbody>
+        </table>
+      </div>
+
+      <div class="block">
+        <div class="block-title">城市人口与收入阶层</div>
+        <div class="kv-list">
+          ${kv('城市人口', city.population.totalText, 'gov.total')}
+          ${city.population.classes
+            .map((row) => kv(row.name, `${row.peopleText} 人（${row.ratioText}）`))
+            .join('')}
+          ${kv('全市平均满意度', city.politics.averageSatisfactionText)}
+        </div>
+        <table class="gov-table">
+          <thead><tr><th>利益边际群体</th><th>人数</th><th>占人口</th><th>满意度</th></tr></thead>
+          <tbody>${city.population.interestMargins
+            .map(
+              (row) =>
+                `<tr><td>${esc(row.name)}</td><td class="num">${esc(row.peopleText)}</td><td class="num">${esc(row.ratioText)}</td><td class="num">${esc(row.satisfactionText)}</td></tr>`,
+            )
+            .join('')}</tbody>
+        </table>
+        <div class="note">${esc(city.population.note)}</div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">可模拟企业样本（统计覆盖范围有限）</div>
+        <div class="kv-list">
+          ${kv('企业数量', city.sample.companyCountText)}
+          ${kv('在营/暂停/危机', city.sample.activeCompanyCountText)}
+          ${kv('企业应付合计', city.sample.payablesText)}
+          ${kv('就业指标 J（还原尺度）', city.sample.jText)}
+          ${kv('产业指标 I（还原尺度）', city.sample.iText)}
+          ${kv('经营压力 P（还原尺度）', city.sample.pText)}
+          ${kv('科研高管任职', city.sample.employmentText)}
+        </div>
+        <div class="note warn">${esc(city.sample.note)}</div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">建设阶段与扩张历史</div>
+        <div class="stat-grid">
+          <div class="stat">
+            <div class="stat-label">建设阶段</div>
+            <div class="stat-value">${esc(city.development.stageText)}</div>
+            <div class="stat-note">${esc(city.development.gapText)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">下一门槛</div>
+            <div class="stat-value num">${esc(city.development.nextThresholdText)}</div>
+          </div>
+        </div>
+        <div class="note">${esc(city.development.lastJudgementText)}</div>
+        <table class="gov-table">
+          <thead><tr><th>阶段</th><th>方向</th><th>状态</th><th>计划完成</th><th>说明</th></tr></thead>
+          <tbody>${projectRows || '<tr><td colspan="5">尚无建设项目</td></tr>'}</tbody>
+        </table>
+        <table class="gov-table">
+          <thead><tr><th>已落成城区</th><th>方向</th><th>完成时间</th></tr></thead>
+          <tbody>${completionRows || '<tr><td colspan="3">尚无已完成城区</td></tr>'}</tbody>
+        </table>
+        <div class="note">${esc(city.development.note)}</div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">逻辑城区</div>
+        <div class="kv-list">
+          ${kv('地图边界', city.territory.boundsText)}
+          ${kv('建筑总数', city.territory.buildingCountText)}
+          ${kv('可购物建筑', city.territory.shopCountText)}
+          ${kv('绑定真实企业的建筑', city.territory.companyBuildingCountText)}
+        </div>
+        <table class="gov-table">
+          <thead><tr><th>城区</th><th>方向</th><th>完成</th><th>建筑</th></tr></thead>
+          <tbody>${districtRows}</tbody>
+        </table>
+        <div class="note">${esc(city.territory.note)}</div>
+      </div>
+    `;
+  }
+}
+
+/** 供面板外部读取的候选人列表（避免重复引入 content 依赖）。 */
+export const GOVERNMENT_CANDIDATE_IDS: readonly CandidateId[] = CANDIDATES.map(
+  (candidate) => candidate.id,
+);
