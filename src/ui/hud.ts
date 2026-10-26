@@ -7,6 +7,7 @@ import type { GameDate } from '../core/calendar';
 import { TIME } from '../content/config';
 import type { GameViewModel } from '../app/view';
 import type { SurvivalStatusView } from '../app/supplies-view';
+import { icon } from './icons';
 
 export interface HudHandlers {
   onSetSpeed(speed: number): void;
@@ -109,18 +110,18 @@ export class Hud {
           .map((speed) => `<button type="button" class="btn btn-sm" data-speed="${speed}">${speed}×</button>`)
           .join('')}
         <div class="divider"></div>
-        <button type="button" class="btn btn-sm btn-ghost" data-el="rest">休息 1 小时</button>
-        <button type="button" class="btn btn-sm btn-ghost" data-el="sleep">睡到早上</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-el="rest">${icon('clock', { size: 14 })}休息 1 小时</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-el="sleep">${icon('house', { size: 14 })}睡到早上</button>
       </div>
 
-      <div class="hud-actions">
+      <div class="hud-actions card">
         <span class="save-state" data-el="save-state"></span>
-        <button type="button" class="btn btn-sm" data-el="save">保存</button>
-        <button type="button" class="btn btn-sm" data-el="finance">个人 Tab</button>
-        <button type="button" class="btn btn-sm" data-el="menu">暂停 Esc</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-el="save">${icon('save', { size: 14 })}保存</button>
+        <button type="button" class="btn btn-sm" data-el="finance">${icon('user', { size: 14 })}个人</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-el="menu">${icon('settings', { size: 14 })}菜单</button>
       </div>
 
-      <div class="hint-text">WASD 移动 · Shift 切换疾跑 · 鼠标转视角 · 滚轮缩放 · F 交互 · Tab 个人界面 · Esc 暂停</div>
+      <div class="hint-text">WASD 移动 · Shift 疾跑 · 鼠标转视角 · 滚轮缩放 · F 交互 · Tab 个人界面 · Esc 暂停</div>
 
       <div class="lock-overlay" data-el="lock" hidden>
         <div class="lock-card">

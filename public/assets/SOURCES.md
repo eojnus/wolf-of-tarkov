@@ -1,6 +1,8 @@
 # 美术资源来源与许可
 
-本项目首版只使用一套外部资源，其余为程序化几何体（道路、地面、树木、建筑标签）。
+场景资源以程序化几何体为主（道路、地面、树木、建筑标签），另有 Kenney 建筑模型与
+Quaternius 角色模型；界面图标自 v0.3.4 起使用 Lucide。每一类资源都在下方登记作者、
+来源链接、许可证与实际用途。
 
 ## Kenney · City Kit Commercial 2.1
 
@@ -47,6 +49,46 @@
 - 说明：这是**现代便装的人类角色**，有独立的待机与行走片段，不是用跑步动画替代行走。
   替换其他 glTF 只需修改 `src/content/config.ts#PLAYER.model`，业务逻辑不依赖模型文件名或节点名。
 - 已移除：v0.1/v0.2 曾使用的 `RobotExpressive.glb`（机器人外观），已从仓库删除。
+
+## Lucide · 界面图标（v0.3.4 引入）
+
+- 项目仓库：https://github.com/lucide-icons/lucide
+- 图标包：`lucide-static@0.469.0`（按需取用单个 SVG，未引入整包依赖与运行时脚本）
+- 作者：Lucide Contributors
+- 许可：**ISC License**
+  - 许可全文：https://github.com/lucide-icons/lucide/blob/main/LICENSE
+  - 本地留存：`icons/lucide/LICENSE-lucide.txt`（与上游同版本）
+- 核查结论：ISC 允许使用、修改、再分发与商用，要求在副本中保留版权与许可声明；
+  已在每个 SVG 文件头部保留 `@license lucide-static v0.469.0 - ISC` 注释，并在此登记。
+- 用途：导航、资金、工作、公司、股票、城市、操作与状态图标。
+- 修改情况：**未改动图形几何**。只在使用处统一了呈现方式——24×24 视框、
+  `stroke="currentColor"`、`stroke-width` 1.75、圆角端点，按尺寸缩放；
+  图形数据内联在 `src/ui/icons.ts`，便于跟随文字颜色，不额外发起网络请求。
+- 体积：29 个 SVG，合计约 12 KB（未压缩），逐个确认界面实际使用后才保留。
+
+### 实际纳入的文件
+
+`public/assets/icons/lucide/*.svg` 共 29 个单图标文件，以及 `LICENSE-lucide.txt`。
+这些文件同时作为许可与来源凭证保留在仓库内；运行时使用内联副本，不读取该目录。
+
+## 字体：未引入 Web 字体（说明取舍）
+
+- 候选：Noto Sans SC（SIL Open Font License 1.1）。
+- 实测取舍：完整中文字重体积过大（单个字重按上游 woff2 计约数 MB 级；多字重或多个
+  子集文件会进一步放大），而本轮可用工具链内没有可靠的子集化步骤，引入后会明显拖慢
+  首屏并让构建产物膨胀。因此**本轮没有引入字体文件**，界面使用系统中文字体栈：
+  `Segoe UI → PingFang SC → Microsoft YaHei → Noto Sans SC（本地已安装时）→
+  Source Han Sans SC → system-ui`。
+- 后果与说明：排版效果随操作系统略有差异（Windows 走微软雅黑，macOS 走苹方），
+  但不会在运行时依赖 Google Fonts 等网络服务。
+
+## Kenney UI Pack：未采用（说明取舍）
+
+- 官方页面：https://kenney.nl/assets/ui-pack
+- 许可：CC0 1.0（可自由使用）。
+- 未纳入的原因：该包以厚描边、斜面高光与饱和渐变为主要视觉语言，与本轮确定的
+  「雾白／浅灰蓝、细边框、柔和圆角」方向冲突。逐件挑几个图标会破坏统一视觉重量，
+  而统一图标已由 Lucide 覆盖，因此只使用 Lucide，不为了用素材而混入第二套图标风格。
 
 ## 未采用的方案
 

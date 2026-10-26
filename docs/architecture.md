@@ -77,7 +77,14 @@ infrastructure/ 存档
   save-validation.ts 字段与跨切片一致性校验
 
 ui/            只渲染只读视图并提交命令；不持有经济数据
-  government-panel.ts  政府面板（五个栏目、SVG 饼图与趋势、赞助草稿只在内存）
+  game-window.ts       统一浮动窗口（拖动、放大/恢复、分类导航、层级与夹紧）
+  panels.ts            分类路由：五类入口、现场办理门禁、局部刷新与图形重绘
+  personal-panel.ts    个人生活/企业经营/持仓的栏目内容、草稿与原地比对
+  government-panel.ts  城市事务七个栏目、人口/产业环形图与趋势、赞助草稿只在内存
+  life-panels.ts       银行、就业、住宅与系统菜单的只读渲染
+  population-pie.ts    原生 SVG 环形图（悬停外移、图例联动、键盘可达、就地更新）
+  stock-chart.ts       K 线绘制与交互（十字线、坐标轴、缩放平移、最新价标记）
+  设计规范与入口映射见 docs/ui-design.md
 world/         Three.js 场景、角色与控制
 ```
 

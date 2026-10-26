@@ -22,6 +22,7 @@ import type {
   SummaryItem,
 } from '../app/personal-view';
 import type { CapitalView } from '../app/securities-view';
+import type { GameViewModel } from '../app/view';
 import { DEFAULT_PERSONAL_QUERY } from '../app/personal-view';
 import { BRANDING } from '../content/config';
 import {
@@ -33,6 +34,8 @@ import {
   renderBusinessResearchSection,
   renderBusinessTalent,
 } from './business-panel';
+import { icon } from './icons';
+import { renderBank, renderOffice } from './life-panels';
 import { paintStockCharts } from './stock-chart';
 import { renderInventorySection } from './inventory-panel';
 import {
@@ -52,19 +55,17 @@ const SECTIONS: ReadonlyArray<{ id: PersonalSection; name: string }> = [
   { id: 'finance', name: '个人财务' },
   { id: 'work', name: '工作情况' },
   { id: 'inventory', name: '背包' },
-  { id: 'stocks', name: '股票投资' },
-  { id: 'company', name: '公司管理' },
+  { id: 'stocks', name: '持仓' },
+  { id: 'company', name: '企业经营' },
 ];
 
-const COMPANY_SUBS: ReadonlyArray<{ id: CompanySub; name: string }> = [
-  { id: 'overview', name: '公司概览' },
-  { id: 'research', name: '研发与产品' },
-  { id: 'talent', name: '人才' },
-  { id: 'finance', name: '企业财务' },
-  { id: 'actions', name: '股东与经营' },
-  { id: 'market', name: '市场总览' },
-  { id: 'capital', name: '资本与治理' },
-];
+/** 内容归属者提供的外部依赖：现场办理的上下文、当前游戏视图与分类跳转。 */
+export interface PersonalPanelHost {
+  /** 当前窗口是从哪个建筑入口打开的（决定现场办理内容）。 */
+  onsite(): string | null;
+  view(): GameViewModel | null;
+  navigate?(section: PersonalSection): void;
+}
 
 /** 数值原地更新的最小间隔：时间连续流逝时不必每帧重排。 */
 const PATCH_INTERVAL_MS = 180;
@@ -238,6 +239,8 @@ function submittedFields(action: string, el: HTMLElement): string[] {
 
 export class PersonalPanel {
   private root: HTMLElement | null = null;
+  /** 股票详情浮窗的宿主（统一窗口的浮层，不随内容滚动）。 */
+  private floatEl: HTMLElement | null = null;
   private section: PersonalSection = 'overview';
   private companySub: CompanySub = 'overview';
   private query: PersonalUiQuery = { ...DEFAULT_PERSONAL_QUERY };
@@ -257,25 +260,25 @@ export class PersonalPanel {
   /** 背包使用请求的 requestId：同一物品只在 cursor 未变时复用，成功（含重放）后清理。 */
   private readonly pendingUseRequests = new Map<string, string>();
 
-  constructor(private readonly getView: (query: PersonalUiQuery) => PersonalView) {}
+  constructor(
+    private readonly getView: (query: PersonalUiQuery) => PersonalView,
+    private readonly host: PersonalPanelHost,
+  ) {}
 
   get isMounted(): boolean {
     return this.root !== null;
   }
 
-  /** 打开：重建外壳并回到「人物总览」。 */
-  mount(host: HTMLElement): void {
-    this.root = host;
-    this.section = 'overview';
-    this.companySub = 'overview';
-    this.query = { ...DEFAULT_PERSONAL_QUERY };
+  /** 挂到统一窗口的内容区：只渲染栏目容器，窗口外壳与分类导航由外层负责。 */
+  mount(container: HTMLElement, floatLayer: HTMLElement | null): void {
+    this.root = container;
+    this.floatEl = floatLayer;
     this.lastPatch = 0;
     this.lastSignature = '';
     this.pendingRebuild = false;
-    this.attachListeners(host);
-    host.innerHTML = this.shell();
-    const layer = host.querySelector<HTMLElement>('[data-window-layer]');
-    if (layer) this.windows.attach(layer);
+    this.attachListeners(container);
+    container.innerHTML = this.sectionsHtml();
+    if (floatLayer) this.windows.attach(floatLayer);
     this.paint(true);
   }
 
@@ -284,6 +287,25 @@ export class PersonalPanel {
     this.windows.detach();
     if (this.root) this.root.innerHTML = '';
     this.root = null;
+    this.floatEl = null;
+  }
+
+  /**
+   * 由外层分类导航调用：设置当前栏目与公司子页。
+   * 这里只切换显示的栏目，不重建导航本身。
+   */
+  setScope(section: PersonalSection, sub?: CompanySub): void {
+    if (!this.root) return;
+    const nextSub = sub ?? 'overview';
+    if (section === this.section && nextSub === this.companySub) {
+      this.patchNav();
+      return;
+    }
+    this.section = section;
+    this.companySub = nextSub;
+    this.lastSignature = '';
+    this.patchNav();
+    this.paint(true);
   }
 
   resetSession(): void {
@@ -559,46 +581,26 @@ export class PersonalPanel {
     return container ? container.contains(active) : false;
   }
 
+  /**
+   * 栏目跳转统一交给外层：外层的分类导航决定高亮与标题，
+   * 这里只负责在自己的栏目容器之间切换。
+   */
   private switchSection(next: PersonalSection): void {
-    if (next === this.section) return;
-    this.section = next;
-    this.paint(true);
+    if (next !== this.section) {
+      this.section = next;
+      this.lastSignature = '';
+      this.patchNav();
+      this.paint(true);
+    }
+    this.host.navigate?.(next);
   }
 
-  /** 外部快捷入口（例如便利店「打开背包」）：打开人物界面的指定栏目。 */
-  openSection(next: PersonalSection): void {
-    if (!this.root) return;
-    this.switchSection(next);
-  }
-
-  private shell(): string {
-    const nav = SECTIONS.map(
-      (item) =>
-        `<button type="button" class="pp-nav-item${item.id === this.section ? ' active' : ''}" data-action="pp-section" data-section="${item.id}">${esc(item.name)}</button>`,
-    ).join('');
-    const sections = SECTIONS.map(
+  /** 只创建栏目容器：每个栏目各自保存滚动位置、输入与展开状态。 */
+  private sectionsHtml(): string {
+    return SECTIONS.map(
       (item) =>
         `<section class="pp-section" data-section="${item.id}"${item.id === this.section ? '' : ' hidden'}></section>`,
     ).join('');
-    return `
-      <div class="panel-scrim" data-action="close"></div>
-      <section class="personal-window" role="dialog" aria-label="人物管理">
-        <header class="pp-head">
-          <div class="pp-avatar" aria-hidden="true">市</div>
-          <div class="pp-identity">
-            <h2 data-f="header.name">${esc(BRANDING.citizenName)}</h2>
-            <p class="pp-meta"><span data-f="header.date"></span> · <span data-f="header.job"></span></p>
-            <p class="pp-meta sub" data-f="header.company"></p>
-          </div>
-          <button type="button" class="btn btn-sm btn-ghost" data-action="close">关闭</button>
-        </header>
-        <div class="pp-body">
-          <nav class="pp-nav">${nav}</nav>
-          <div class="pp-content">${sections}</div>
-        </div>
-        <div class="pp-window-layer" data-window-layer></div>
-      </section>
-    `;
   }
 
   private paint(force: boolean): void {
@@ -606,8 +608,6 @@ export class PersonalPanel {
     const view = this.getView(this.query);
     this.lastView = view;
 
-    // 头部与导航每次都更新（都是纯文本/类名）
-    this.patchHeader(view);
     this.patchNav();
 
     const now = performance.now();
@@ -625,27 +625,8 @@ export class PersonalPanel {
     this.paintCharts();
   }
 
-  private patchHeader(view: PersonalView): void {
-    if (!this.root) return;
-    const values: Record<string, string> = {
-      'header.name': view.overview.name,
-      'header.date': `${view.dateText} ${view.clockText}`,
-      'header.job': view.overview.jobText,
-      'header.company': `${view.overview.companyText} · ${view.overview.companyStatusText}`,
-    };
-    for (const el of this.root.querySelectorAll<HTMLElement>('[data-f]')) {
-      const key = el.dataset.f;
-      if (!key) continue;
-      const next = values[key];
-      if (next !== undefined && el.textContent !== next) el.textContent = next;
-    }
-  }
-
   private patchNav(): void {
     if (!this.root) return;
-    for (const el of this.root.querySelectorAll<HTMLElement>('.pp-nav-item')) {
-      el.classList.toggle('active', el.dataset.section === this.section);
-    }
     // 只显示当前栏目；其他栏目的 DOM 保留，切换回来时滚动位置与输入都还在
     for (const el of this.root.querySelectorAll<HTMLElement>('.pp-section[data-section]')) {
       el.hidden = el.dataset.section !== this.section;
@@ -750,8 +731,11 @@ export class PersonalPanel {
           .join(',')}`;
       case 'finance': {
         const f = view.finance;
+        const game = this.host.view();
         return [
           'f',
+          this.host.onsite() === 'bank' ? 'bank' : '',
+          game?.loan.open ? '1' : '0',
           f.ledger.months.join(','),
           f.ledger.categories.map((item) => item.id).join(','),
           f.ledger.month ?? '',
@@ -768,7 +752,7 @@ export class PersonalPanel {
         ].join('|');
       }
       case 'work':
-        return `w|${view.work.hired ? '1' : '0'}`;
+        return `w|${view.work.hired ? '1' : '0'}|${this.host.onsite() === 'office' ? 'office' : ''}`;
       case 'inventory':
         return `i|${view.inventory.map((item) => `${item.itemId}:${item.count}`).join(',')}|${view.survival.zeroHunger ? '1' : '0'}${view.survival.zeroWater ? '1' : '0'}`;
       case 'stocks': {
@@ -831,6 +815,23 @@ export class PersonalPanel {
     }
   }
 
+  /**
+   * 现场办理区块：只有从对应建筑入口打开时才追加，
+   * 保证存取款、入职上班不会被分类重排变成远程操作。
+   */
+  private onsiteExtra(): string {
+    const game = this.host.view();
+    if (!game) return '';
+    const onsite = this.host.onsite();
+    if (this.section === 'finance' && onsite === 'bank') {
+      return `<div class="pp-card"><div class="pp-card-title">${icon('banknote', { size: 14 })} 现场办理 · 存取款与贷款</div>${renderBank(game)}</div>`;
+    }
+    if (this.section === 'work' && onsite === 'office') {
+      return `<div class="pp-card"><div class="pp-card-title">${icon('briefcase', { size: 14 })} 现场办理 · 入职与上班</div>${renderOffice(game)}</div>`;
+    }
+    return '';
+  }
+
   private renderOverview(view: PersonalView): string {
     const o = view.overview;
     const todos = o.todos.length
@@ -845,6 +846,14 @@ export class PersonalPanel {
       : '<div class="pp-empty">目前没有待处理事项</div>';
 
     return `<div class="pp-scroll">
+      <div class="pp-ident">
+        <div class="pp-avatar" aria-hidden="true">市</div>
+        <div class="pp-identity">
+          <h2>${esc(o.name)}</h2>
+          <p class="pp-meta">${esc(view.dateText)} ${esc(view.clockText)} · ${esc(o.jobText)}</p>
+          <p class="pp-meta sub">${esc(o.companyText)} · ${esc(o.companyStatusText)}</p>
+        </div>
+      </div>
       <div class="pp-card">
         <div class="pp-card-title">当前状态</div>
         <div class="pp-kpi-row">${o.summary.map(kpi).join('')}</div>
@@ -854,7 +863,7 @@ export class PersonalPanel {
         <div class="pp-card-title">待处理事项</div>
         ${todos}
       </div>
-      <div class="pp-hint">按 Tab 关闭界面；按 Esc 先关股票详情窗，再关整个界面。</div>
+      <div class="pp-hint">按 Tab 关闭窗口；按 Esc 先关股票详情窗，再关整个窗口。</div>
     </div>`;
   }
 
@@ -955,6 +964,7 @@ export class PersonalPanel {
         <div class="pp-card-title">历史个人月报</div>
         ${reportBlock(f.report, f.reportMonths, f.report ? f.report.monthKey : null)}
       </div>
+      ${this.onsiteExtra()}
     </div>`;
   }
 
@@ -983,6 +993,7 @@ export class PersonalPanel {
         <div class="pp-hint">当前状态：${esc(w.reasonText)}</div>
         <div class="pp-hint">${esc(w.note)}</div>
       </div>
+      ${this.onsiteExtra()}
     </div>`;
   }
 
@@ -1003,15 +1014,11 @@ export class PersonalPanel {
 
   private renderCompany(view: PersonalView): string {
     const b = view.company;
-    const subNav = COMPANY_SUBS.map(
-      (item) =>
-        `<button type="button" class="pp-subnav-item${item.id === this.companySub ? ' active' : ''}" data-action="pp-company-sub" data-sub="${item.id}">${esc(item.name)}</button>`,
-    ).join('');
 
     let content = '';
     if (!b.hasCompany) {
       content = `${renderBusinessCreate(b)}
-        <div class="pp-card"><div class="pp-card-title">市场总览</div>${renderBusinessMarket(b)}</div>
+        ${renderBusinessMarket(b)}
         ${this.renderCapital(view.capital)}`;
     } else {
       switch (this.companySub) {
@@ -1027,7 +1034,7 @@ export class PersonalPanel {
         case 'finance':
           content = `${renderBusinessFinance(b)}
             <div class="block">
-              <div class="block-title">应付分项</div>
+              <div class="block-title">应付款项</div>
               <div class="pp-rows">
                 ${b.dueItems
                   .map(
@@ -1051,7 +1058,8 @@ export class PersonalPanel {
                 ]),
                 '还没有企业资金流水',
               )}
-            </div>`;
+            </div>
+            ${renderBusinessActions(b)}`;
           break;
         case 'actions':
           content = renderBusinessActions(b);
@@ -1067,10 +1075,7 @@ export class PersonalPanel {
       }
     }
 
-    return `<div class="pp-scroll">
-      <div class="pp-subnav">${subNav}</div>
-      ${content}
-    </div>`;
+    return `<div class="pp-scroll">${content}</div>`;
   }
 
   private renderCapital(view: CapitalView): string {
@@ -1294,7 +1299,6 @@ export class PersonalPanel {
     };
     const container = this.activeContainer();
     if (container) paintStockCharts(container, lookup);
-    const layer = this.root.querySelector<HTMLElement>('[data-window-layer]');
-    if (layer) paintStockCharts(layer, lookup);
+    if (this.floatEl) paintStockCharts(this.floatEl, lookup);
   }
 }

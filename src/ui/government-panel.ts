@@ -12,6 +12,7 @@ import { formatMoney } from '../core/money';
 import { CANDIDATES, type CandidateId } from '../content/government';
 import type { GovernmentPanelView } from '../app/government-view';
 import type { CityEconomyPanelView } from '../app/city-view';
+import { DonutPie, PIE_COLORS, type PieDatum } from './population-pie';
 
 export type GovernmentTab =
   | 'population'
@@ -19,6 +20,7 @@ export type GovernmentTab =
   | 'structure'
   | 'campaign'
   | 'economy'
+  | 'development'
   | 'history';
 
 export interface GovernmentUiHandlers {
@@ -29,16 +31,7 @@ export interface GovernmentUiHandlers {
   };
 }
 
-const TABS: Array<{ id: GovernmentTab; label: string }> = [
-  { id: 'population', label: '人口统计' },
-  { id: 'politics', label: '政治人口' },
-  { id: 'structure', label: '政府结构' },
-  { id: 'campaign', label: '选举与赞助' },
-  { id: 'economy', label: '城市经济' },
-  { id: 'history', label: '历史记录' },
-];
-
-const PIE_COLORS = ['#64c0f0', '#f0c46a', '#67d99b', '#b58fd6', '#f08c8c'];
+const PIE_COLORS_TREND = [PIE_COLORS[1]!, PIE_COLORS[2]!, PIE_COLORS[0]!];
 
 function esc(text: string): string {
   return text
@@ -46,49 +39,6 @@ function esc(text: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-/** 圆环饼图：各段面积严格按比例绘制，中心显示总数。 */
-function pieChart(
-  items: Array<{ label: string; value: number; ratio: number; text: string }>,
-  centerLabel: string,
-  centerValue: string,
-): string {
-  const radius = 44;
-  const circumference = 2 * Math.PI * radius;
-  let offset = 0;
-  const slices = items
-    .map((item, index) => {
-      const ratio = Math.max(0, item.ratio);
-      const length = circumference * ratio;
-      const dash = `${length.toFixed(3)} ${(circumference - length).toFixed(3)}`;
-      const shift = (-offset).toFixed(3);
-      offset += length;
-      const color = PIE_COLORS[index % PIE_COLORS.length]!;
-      return `<circle class="pie-slice" cx="60" cy="60" r="${radius}" stroke="${color}" stroke-dasharray="${dash}" stroke-dashoffset="${shift}"></circle>`;
-    })
-    .join('');
-  const legend = items
-    .map(
-      (item, index) => `
-      <li>
-        <span class="dot" style="background:${PIE_COLORS[index % PIE_COLORS.length]}"></span>
-        <span>${esc(item.label)}</span>
-        <b>${esc(item.text)}</b>
-        <em>${(Math.max(0, item.ratio) * 100).toFixed(1)}%</em>
-      </li>`,
-    )
-    .join('');
-  return `
-    <div class="pie-wrap">
-      <svg class="pie-chart" viewBox="0 0 120 120" role="img" aria-label="${esc(centerLabel)}">
-        <circle class="pie-track" cx="60" cy="60" r="${radius}"></circle>
-        ${slices}
-        <text class="pie-center-label" x="60" y="54">${esc(centerLabel)}</text>
-        <text class="pie-center-value" x="60" y="74">${esc(centerValue)}</text>
-      </svg>
-      <ul class="pie-legend">${legend}</ul>
-    </div>`;
 }
 
 /** 阶层占比趋势：最近 12 个月的堆叠柱。 */
@@ -111,9 +61,9 @@ function trendChart(
       const yMid = height - padding - (low + mid) * (height - padding * 2);
       const yHigh = height - padding - (low + mid + high) * (height - padding * 2);
       return `
-        <rect x="${x.toFixed(1)}" y="${yHigh.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(0, high * (height - padding * 2)).toFixed(1)}" fill="${PIE_COLORS[2]}"></rect>
-        <rect x="${x.toFixed(1)}" y="${yMid.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(0, mid * (height - padding * 2)).toFixed(1)}" fill="${PIE_COLORS[1]}"></rect>
-        <rect x="${x.toFixed(1)}" y="${yLow.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(0, low * (height - padding * 2)).toFixed(1)}" fill="${PIE_COLORS[0]}"></rect>
+        <rect x="${x.toFixed(1)}" y="${yHigh.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(0, high * (height - padding * 2)).toFixed(1)}" fill="${PIE_COLORS_TREND[2]}"></rect>
+        <rect x="${x.toFixed(1)}" y="${yMid.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(0, mid * (height - padding * 2)).toFixed(1)}" fill="${PIE_COLORS_TREND[1]}"></rect>
+        <rect x="${x.toFixed(1)}" y="${yLow.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(0, low * (height - padding * 2)).toFixed(1)}" fill="${PIE_COLORS_TREND[0]}"></rect>
         <text x="${(x + barWidth / 2).toFixed(1)}" y="${height - 1}" text-anchor="middle" font-size="9" fill="var(--text-faint)">${esc(point.monthKey.slice(2))}</text>`;
     })
     .join('');
@@ -122,9 +72,9 @@ function trendChart(
       ${bars}
     </svg>
     <div class="gov-legend-row">
-      <span><i class="dot" style="background:${PIE_COLORS[0]}"></i>低</span>
-      <span><i class="dot" style="background:${PIE_COLORS[1]}"></i>中</span>
-      <span><i class="dot" style="background:${PIE_COLORS[2]}"></i>高</span>
+      <span><i class="dot" style="background:${PIE_COLORS_TREND[0]}"></i>低</span>
+      <span><i class="dot" style="background:${PIE_COLORS_TREND[1]}"></i>中</span>
+      <span><i class="dot" style="background:${PIE_COLORS_TREND[2]}"></i>高</span>
     </div>`;
 }
 
@@ -134,7 +84,8 @@ function kv(label: string, value: string, live?: string): string {
 }
 
 export class GovernmentPanel {
-  private tab: GovernmentTab = 'population';
+  private readonly populationPie = new DonutPie();
+  private readonly industryPie = new DonutPie();
   /** 赞助草稿：候选人 id → 输入文本（只存在内存）。 */
   private drafts: Record<string, string> = {};
   /** 待重试的赞助请求：同一笔重试复用同一个操作 id，不会重复扣款。 */
@@ -148,22 +99,61 @@ export class GovernmentPanel {
 
   /** 新游戏 / 读档后清空草稿（不进存档）。 */
   resetSession(): void {
-    this.tab = 'population';
     this.drafts = {};
     this.pending = null;
   }
 
-  /** 面板主体 HTML。 */
-  renderBody(): string {
+  /**
+   * 渲染指定栏目。
+   * 外部分类导航已经取代面板内部的 Tab 条，所以这里只返回栏目内容本体。
+   */
+  renderSection(tab: GovernmentTab): string {
+    return `<div class="gov-body" data-gov-tab="${tab}">${this.renderTab(this.view(), tab)}</div>`;
+  }
+
+  /**
+   * 内容重绘后重新挂载环形图：宿主换了才重建节点，数值变化只改弧长与文字，
+   * 因此悬停中的扇区与提示不会被刷新打断。
+   */
+  paint(root: HTMLElement): void {
     const view = this.view();
-    return `
-      <div class="gov-tabs">
-        ${TABS.map(
-          (item) => `<button type="button" class="btn btn-sm${item.id === this.tab ? ' is-active' : ''}" data-action="gov-tab" data-tab="${item.id}">${esc(item.label)}</button>`,
-        ).join('')}
-      </div>
-      <div class="gov-body">${this.renderTab(view)}</div>
-    `;
+    const city = this.cityView();
+
+    const popHost = root.querySelector<HTMLElement>('[data-el="gov-pop-pie"]');
+    if (popHost) {
+      this.populationPie.mount(popHost);
+      this.populationPie.update(populationPieData(view), {
+        ariaLabel: '城市人口按经济阶层分布',
+        unit: '人',
+        center: {
+          label: '总人口',
+          value: view.population.totalText,
+          sub: view.population.growthRateText,
+        },
+      });
+    }
+
+    const industryHost = root.querySelector<HTMLElement>('[data-el="gov-industry-pie"]');
+    if (industryHost) {
+      const industries = city.economy.industries;
+      const data: PieDatum[] = industries.map((row, index) => ({
+        id: `industry-${index}`,
+        label: row.label,
+        value: row.ratio,
+        valueText: row.centsText,
+        ratio: row.ratio,
+      }));
+      this.industryPie.mount(industryHost);
+      this.industryPie.update(data, {
+        ariaLabel: '本月已结算经营产出的产业分布',
+        unit: '',
+        center: {
+          label: '本月产出',
+          value: city.economy.monthOutputText,
+          sub: industries.length ? '' : '尚无已结算经营产出',
+        },
+      });
+    }
   }
 
   /**
@@ -188,47 +178,21 @@ export class GovernmentPanel {
       if (el instanceof HTMLButtonElement && el.disabled !== disabled) el.disabled = disabled;
     }
     this.patchSponsorshipRecords(root, view);
-    this.patchCharts(root, view);
+    this.patchTrend(root, view);
+    this.paint(root);
   }
 
-  /** 人口饼图（总人口、各层人数与占比同源，最大余数法取整）。 */
-  private populationPieHtml(view: GovernmentPanelView): string {
-    const pop = view.population;
-    return pieChart(
-      pop.classes.map((row) => ({
-        label: row.name,
-        value: row.people,
-        ratio: row.ratio,
-        text: row.peopleText,
-      })),
-      '总人口',
-      `${pop.total.toLocaleString('en-US')}`,
-    );
-  }
-
-  /** 图表不含输入框：结构不变时按内容指纹原地替换，不打断焦点与滚动。 */
-  private patchCharts(root: HTMLElement, view: GovernmentPanelView): void {
-    const pieNode = root.querySelector<HTMLElement>('[data-el="gov-pop-pie"]');
-    if (pieNode) {
-      const signature = view.population.classes
-        .map((row) => `${row.people}:${row.ratio}`)
-        .join('|');
-      if (pieNode.dataset.signature !== signature) {
-        pieNode.dataset.signature = signature;
-        pieNode.innerHTML = this.populationPieHtml(view);
-      }
-    }
+  /** 阶层占比趋势是纯 SVG，没有交互状态，按内容指纹原地替换即可。 */
+  private patchTrend(root: HTMLElement, view: GovernmentPanelView): void {
     const trendNode = root.querySelector<HTMLElement>('[data-el="gov-trend"]');
-    if (trendNode) {
-      const signature = view.population.trend
-        .map((point) => `${point.monthKey}:${point.low}:${point.mid}:${point.high}`)
-        .join('|');
-      if (trendNode.dataset.signature !== signature) {
-        trendNode.dataset.signature = signature;
-        trendNode.innerHTML =
-          trendChart(view.population.trend) || '<div class="empty">尚无趋势数据</div>';
-      }
-    }
+    if (!trendNode) return;
+    const signature = view.population.trend
+      .map((point) => `${point.monthKey}:${point.low}:${point.mid}:${point.high}`)
+      .join('|');
+    if (trendNode.dataset.signature === signature) return;
+    trendNode.dataset.signature = signature;
+    trendNode.innerHTML =
+      trendChart(view.population.trend) || '<div class="empty">尚无趋势数据</div>';
   }
 
   /** 赞助记录表：结构固定、不含输入框，按内容指纹原地更新。 */
@@ -280,14 +244,6 @@ export class GovernmentPanel {
 
   /** 处理面板内的点击。返回 true 表示已处理。 */
   handleAction(action: string, target: HTMLElement): boolean {
-    if (action === 'gov-tab') {
-      const tab = target.dataset.tab as GovernmentTab | undefined;
-      if (tab && TABS.some((item) => item.id === tab)) {
-        this.tab = tab;
-        return true;
-      }
-      return false;
-    }
     if (action === 'gov-sponsor') {
       const candidateId = target.dataset.candidate as CandidateId | undefined;
       if (!candidateId) return false;
@@ -366,8 +322,8 @@ export class GovernmentPanel {
 
   /* ------------------------------------------------------------ 栏目 */
 
-  private renderTab(view: GovernmentPanelView): string {
-    switch (this.tab) {
+  private renderTab(view: GovernmentPanelView, tab: GovernmentTab): string {
+    switch (tab) {
       case 'population':
         return this.renderPopulation(view);
       case 'politics':
@@ -378,6 +334,8 @@ export class GovernmentPanel {
         return this.renderCampaign(view);
       case 'economy':
         return this.renderEconomy();
+      case 'development':
+        return this.renderDevelopment();
       case 'history':
         return this.renderHistory(view);
     }
@@ -385,8 +343,6 @@ export class GovernmentPanel {
 
   private renderPopulation(view: GovernmentPanelView): string {
     const pop = view.population;
-    const pie = this.populationPieHtml(view);
-    const pieSignature = pop.classes.map((row) => `${row.people}:${row.ratio}`).join('|');
     const trendSignature = pop.trend
       .map((point) => `${point.monthKey}:${point.low}:${point.mid}:${point.high}`)
       .join('|');
@@ -424,7 +380,8 @@ export class GovernmentPanel {
             <div class="stat-note">${esc(pop.settledNote)}</div>
           </div>
         </div>
-        ${`<div data-el="gov-pop-pie" data-signature="${esc(pieSignature)}">${pie}</div>`}
+        <div data-el="gov-pop-pie" data-preserve="gov-pop-pie"></div>
+        <div class="note">扇区与图例双向联动：悬停或键盘聚焦时扇区沿中线轻微外移并提亮，中心显示该阶层的摘要；表格保留同一份人数与占比，信息不只靠颜色表达。</div>
         <table class="gov-table">
           <thead><tr><th>经济阶层</th><th>人数</th><th>占比</th></tr></thead>
           <tbody>${classRows}</tbody>
@@ -730,19 +687,6 @@ export class GovernmentPanel {
   private renderEconomy(): string {
     const city = this.cityView();
     const economy = city.economy;
-    const industryPie =
-      economy.industries.length > 0
-        ? pieChart(
-            economy.industries.map((row) => ({
-              label: row.label,
-              value: row.ratio,
-              ratio: row.ratio,
-              text: row.centsText,
-            })),
-            '本月产出',
-            economy.monthOutputText,
-          )
-        : '<div class="empty">尚无已结算经营产出</div>';
     const trendRows = economy.trend
       .map(
         (row) => `
@@ -751,39 +695,6 @@ export class GovernmentPanel {
           <td class="num">${esc(row.gdpText)}</td>
           <td class="num">${esc(row.outputText)}</td>
           <td class="num">${esc(row.indexText)}</td>
-        </tr>`,
-      )
-      .join('');
-    const projectRows = city.development.projects
-      .map(
-        (row) => `
-        <tr>
-          <td>${esc(row.stageText)}</td>
-          <td>${esc(row.directionText)}</td>
-          <td>${esc(row.statusText)}</td>
-          <td class="num">${esc(row.completeText)}</td>
-          <td>${esc(row.note)}</td>
-        </tr>`,
-      )
-      .join('');
-    const completionRows = city.development.completions
-      .map(
-        (row) => `
-        <tr>
-          <td>${esc(row.districtText)}</td>
-          <td>${esc(row.directionText)}</td>
-          <td class="num">${esc(row.completedText)}</td>
-        </tr>`,
-      )
-      .join('');
-    const districtRows = city.territory.districts
-      .map(
-        (row) => `
-        <tr>
-          <td>${esc(row.name)}</td>
-          <td>${esc(row.directionText)}</td>
-          <td class="num">${esc(row.completedText)}</td>
-          <td class="num">${esc(row.buildingCountText)}</td>
         </tr>`,
       )
       .join('');
@@ -825,7 +736,7 @@ export class GovernmentPanel {
 
       <div class="block">
         <div class="block-title">本月已结算经营产出的产业拆分</div>
-        ${industryPie}
+        <div data-el="gov-industry-pie" data-preserve="gov-industry-pie"></div>
         <div class="note">${esc(economy.industryNote)}</div>
         <div class="note">产业占比只按「本月已结算产出」拆分（与下方月度快照同尺度）；累计产出与 GDP 在上一栏单独展示。</div>
       </div>
@@ -873,6 +784,49 @@ export class GovernmentPanel {
         <div class="note warn">${esc(city.sample.note)}</div>
       </div>
 
+    `;
+  }
+
+  /**
+   * 建设与城区栏目：门槛、项目、落成历史与逻辑地图。
+   * 只消费 `CityEconomyPanelView` 的 development / territory 两部分。
+   */
+  private renderDevelopment(): string {
+    const city = this.cityView();
+    const projectRows = city.development.projects
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.stageText)}</td>
+          <td>${esc(row.directionText)}</td>
+          <td>${esc(row.statusText)}</td>
+          <td class="num">${esc(row.completeText)}</td>
+          <td>${esc(row.note)}</td>
+        </tr>`,
+      )
+      .join('');
+    const completionRows = city.development.completions
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.districtText)}</td>
+          <td>${esc(row.directionText)}</td>
+          <td class="num">${esc(row.completedText)}</td>
+        </tr>`,
+      )
+      .join('');
+    const districtRows = city.territory.districts
+      .map(
+        (row) => `
+        <tr>
+          <td>${esc(row.name)}</td>
+          <td>${esc(row.directionText)}</td>
+          <td class="num">${esc(row.completedText)}</td>
+          <td class="num">${esc(row.buildingCountText)}</td>
+        </tr>`,
+      )
+      .join('');
+    return `
       <div class="block">
         <div class="block-title">建设阶段与扩张历史</div>
         <div class="stat-grid">
@@ -914,6 +868,17 @@ export class GovernmentPanel {
       </div>
     `;
   }
+}
+
+/** 人口分类 → 环形图数据。人数与占比都直接用视图给出的同一份数值。 */
+function populationPieData(view: GovernmentPanelView): PieDatum[] {
+  return view.population.classes.map((row) => ({
+    id: row.name,
+    label: row.name,
+    value: row.people,
+    valueText: row.peopleText,
+    ratio: row.ratio,
+  }));
 }
 
 /** 供面板外部读取的候选人列表（避免重复引入 content 依赖）。 */

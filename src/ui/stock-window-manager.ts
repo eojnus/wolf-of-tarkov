@@ -6,6 +6,9 @@
  * 同一会话里再次打开时恢复；新游戏或读档则整体重置。
  */
 
+/** 同时打开的辅助窗上限：超出时关闭最早打开的一个。 */
+const MAX_WINDOWS = 2;
+
 export interface StockWindowContent {
   readonly title: string;
   readonly subtitle: string;
@@ -74,6 +77,12 @@ export class StockWindowManager {
       return;
     }
     if (!this.layer) return;
+    // 辅助窗最多两个：再多就关掉最早打开的那个，避免层层叠加遮住主窗口
+    while (this.openOrder.length >= MAX_WINDOWS) {
+      const oldest = this.openOrder[0];
+      if (oldest === undefined) break;
+      this.close(oldest);
+    }
     if (!this.positions.has(id)) {
       const offset = this.openOrder.length * 24;
       this.positions.set(id, { x: 28 + offset, y: 20 + offset });
