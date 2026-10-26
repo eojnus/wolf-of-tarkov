@@ -330,6 +330,14 @@ export const REAL_ESTATE_RULES = {
   landOfferPremium: { min: 1.02, max: 1.18 },
   /** 住宅估值系数范围（供需要素调整后必须落在这个区间）。 */
   homeValuationFactor: { min: 0.85, max: 1.25 },
+  /** 卖方挂牌价相对参考估值的溢价（卖方行为，不是成交价）。 */
+  sellerAskingPremium: 1.02,
+  /** 住宅供需修正系数：未满足意愿抬价、空置压低价格。 */
+  homeMarketFactor: { demandWeight: 0.15, vacancyPenalty: 0.1 },
+  /** 地段系数：基础城区为基准，扩张城区按模板给同一小幅溢价。 */
+  districtValuationFactor: { base: 1, expansion: 1.02 },
+  /** AI 土地报价的月份抖动（确定性，按 monthIndex % 3 在 ±1 档之间）。 */
+  landOfferPremiumJitter: 0.02,
   /** 每月每群组最多成交套数。 */
   monthlyGroupSaleCap: 6,
   /** 每月全市场最多成交套数（含玩家与其他买家的成交）。 */
@@ -347,6 +355,7 @@ export const REAL_ESTATE_RULES = {
    *  - 当前执政方向：与建设方向一致的规划预期（不预知选举结果，只看已生效任期）。
    */
   landValuation: {
+    /** GDP 增长率对土地估值的权重（增长率本身先夹在 ±30%）。 */
     indexWeight: 0.3,
     completedStageBonus: 0.03,
     completedStageCap: 3,

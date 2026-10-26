@@ -154,7 +154,12 @@ function refreshHomeValuations(draft: GameState): void {
     0,
   );
   const demandIndex = maxIntent > 0 ? clamp(unmet / maxIntent, 0, 1) : 0;
-  const marketFactor = clamp(1 + 0.15 * demandIndex - 0.1 * vacancy, 0.85, 1.25);
+  const factorRules = REAL_ESTATE_RULES.homeMarketFactor;
+  const marketFactor = clamp(
+    1 + factorRules.demandWeight * demandIndex - factorRules.vacancyPenalty * vacancy,
+    REAL_ESTATE_RULES.homeValuationFactor.min,
+    REAL_ESTATE_RULES.homeValuationFactor.max,
+  );
   const step = REAL_ESTATE_RULES.valuationMonthlyStep;
   for (const property of homes) {
     if (property.freeResidenceFor === 'player') continue;
@@ -172,11 +177,18 @@ function refreshHomeValuations(draft: GameState): void {
   }
 }
 
-/** 土地估值因子：指数 + 已完成建设阶段 + 已生效的执政方向（不预知选举）。 */
+/**
+ * 土地估值因子：已结算 GDP 增长 + 已完成建设阶段 + 已生效的执政方向（不预知选举）。
+ *
+ * 用 GDP 相对开局基础 GDP 的增长率而不是房价或玩家交易：土地价值跟随城市经济，
+ * 并且这一项只影响**参考估值**，不产生任何现金流。
+ */
 function landValuationFactor(draft: GameState, nowMinute: number): number {
   const rules = REAL_ESTATE_RULES.landValuation;
   const economy = liveCityEconomyOf(draft, nowMinute);
-  const indexTerm = rules.indexWeight * (economy.indexValue / 100 - 1);
+  const base = Math.max(1, economy.baseGdpCents);
+  const growth = clamp(economy.gdpCents / base - 1, -0.3, 0.3);
+  const indexTerm = rules.indexWeight * growth;
   const stages = Math.min(
     rules.completedStageCap,
     draft.cityDevelopment.completedStages.length,

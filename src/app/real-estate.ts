@@ -58,7 +58,7 @@ import {
 import type { GameState } from './state';
 
 /** 基础城区的地段系数（扩张城区按模板给同一基数，避免无依据的差异）。 */
-const BASE_DISTRICT_FACTOR = 1;
+const BASE_DISTRICT_FACTOR = REAL_ESTATE_RULES.districtValuationFactor.base;
 
 /* ------------------------------------------------------------ 账户与标签 */
 
@@ -140,7 +140,7 @@ export function refreshSellerListings(state: GameState, atMinute: number): void 
     if (!listing) continue;
     const target = Math.max(
       REAL_ESTATE_RULES.minListingPriceCents,
-      Math.round(property.valuationCents * 1.02),
+      Math.round(property.valuationCents * REAL_ESTATE_RULES.sellerAskingPremium),
     );
     if (Math.abs(target - listing.priceCents) < Math.max(100, listing.priceCents * 0.01)) continue;
     property.listing = {
@@ -509,7 +509,7 @@ export function createLandOffers(draft: GameState, atMinute: number, monthIndex:
         REAL_ESTATE_RULES.landOfferPremium.max,
         Math.max(
           REAL_ESTATE_RULES.landOfferPremium.min,
-          entity.bidPremium + 0.02 * ((monthIndex % 3) - 1),
+          entity.bidPremium + REAL_ESTATE_RULES.landOfferPremiumJitter * ((monthIndex % 3) - 1),
         ),
       );
       const priceCents = Math.max(1, Math.round(property.valuationCents * premium));
@@ -565,7 +565,7 @@ export function playerHasFreeResidence(state: GameState): boolean {
 /** 基础城区与扩张城区的参考地段系数：同一模板同一系数，避免无依据差异。 */
 export function districtFactorOf(districtId: string): number {
   if (districtId === 'district-base') return BASE_DISTRICT_FACTOR;
-  return 1.02;
+  return REAL_ESTATE_RULES.districtValuationFactor.expansion;
 }
 
 /** 户型名与面积文案在视图层复用。 */
