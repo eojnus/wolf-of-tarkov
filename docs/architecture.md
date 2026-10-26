@@ -84,7 +84,7 @@ ui/            只渲染只读视图并提交命令；不持有经济数据
   life-panels.ts       银行、就业、住宅与系统菜单的只读渲染
   population-pie.ts    原生 SVG 环形图（悬停外移、图例联动、键盘可达、就地更新）
   stock-chart.ts       K 线绘制与交互（十字线、坐标轴、缩放平移、最新价标记）
-  设计规范与入口映射见 docs/ui-design.md
+  导航与窗口的现行行为以以上表现层模块实现为准
 world/         Three.js 场景、角色与控制
 ```
 

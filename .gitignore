@@ -9,3 +9,7 @@ dist/
 .env.*
 !.env.example
 src/features/population/sed5H9Nog
+
+# Local planning and agent briefs
+/docs/ui-design.md
+/docs/real-estate-task.md
