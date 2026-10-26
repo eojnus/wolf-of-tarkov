@@ -6,6 +6,8 @@
  * 同一会话里再次打开时恢复；新游戏或读档则整体重置。
  */
 
+import { destroyStockCharts } from './stock-chart';
+
 /** 同时打开的辅助窗上限：超出时关闭最早打开的一个。 */
 const MAX_WINDOWS = 2;
 
@@ -42,6 +44,7 @@ export class StockWindowManager {
 
   attach(layer: HTMLElement): void {
     this.layer = layer;
+    destroyStockCharts(layer);
     layer.innerHTML = '';
     this.windows.clear();
     // 恢复本会话内的打开顺序
@@ -54,7 +57,11 @@ export class StockWindowManager {
 
   detach(): void {
     this.endDrag();
-    if (this.layer) this.layer.innerHTML = '';
+    if (this.layer) {
+      // 画布随窗口一起消失，先解绑图表控制器再清空
+      destroyStockCharts(this.layer);
+      this.layer.innerHTML = '';
+    }
     this.layer = null;
     this.windows.clear();
   }
@@ -120,6 +127,7 @@ export class StockWindowManager {
       if (index >= 0) this.openOrder.splice(index, 1);
       return;
     }
+    destroyStockCharts(entry.el);
     entry.el.remove();
     this.windows.delete(id);
     const index = this.openOrder.indexOf(id);
@@ -219,6 +227,8 @@ export class StockWindowManager {
     }
     if (body && body.dataset.signature !== content.body) {
       body.dataset.signature = content.body;
+      // 正文整体替换：旧画布上的控制器必须先销毁，否则观察器会攥着脱离文档的节点
+      destroyStockCharts(body);
       body.innerHTML = content.body;
     }
   }

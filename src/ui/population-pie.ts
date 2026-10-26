@@ -4,7 +4,8 @@
  * 只用原生 SVG：扇区按真实比例绘制，悬停时沿中线轻微外移并提亮；
  * 外移用 CSS transform 实现，不参与布局，因此不会改变统计值、也不会让容器尺寸跳动。
  *
- * 交互：扇区与图例双向联动；小比例扇区另有更宽的透明命中环，避免 0.3% 的扇区点不到。
+ * 交互：扇区与图例双向联动；每个扇区另有一块更宽的透明热区，
+ * 热区是按扇区角度算出来的真实环带路径，因此只会命中自己那一段，不会串到相邻分类。
  * 键盘：扇区与图例项都可用 Tab 聚焦，聚焦时显示同样的提示。
  * 数据更新：形状不变时只改弧长与文字，保留当前悬停对象与提示，不重播入场。
  */
@@ -48,6 +49,38 @@ export const PIE_COLORS: readonly string[] = [
 const R = 46;
 const CIRCUMFERENCE = 2 * Math.PI * R;
 const OFFSET = 3.2;
+/** 热区内/外半径：比 18px 可见描边更宽，方便点小扇区（外沿留在视框内） */
+const HIT_INNER = R - 14;
+const HIT_OUTER = R + 12;
+const TAU = Math.PI * 2;
+
+interface SliceNodes {
+  arc: SVGCircleElement;
+  hit: SVGPathElement;
+  legend: HTMLElement;
+}
+
+/** 环带路径：a0→a1 从 3 点钟方向顺时针（与描边虚线的起点一致）。 */
+function sectorPath(a0: number, a1: number): string {
+  const sweep = a1 - a0;
+  if (sweep <= 1e-6) return '';
+  const point = (radius: number, angle: number): string =>
+    `${(60 + radius * Math.cos(angle)).toFixed(2)} ${(60 + radius * Math.sin(angle)).toFixed(2)}`;
+  if (sweep >= TAU - 1e-6) {
+    // 单一分类占满整环：两个半圆拼出闭环带，避免起终点重合导致路径退化
+    return (
+      `M ${point(HIT_OUTER, a0)} A ${HIT_OUTER} ${HIT_OUTER} 0 1 1 ${point(HIT_OUTER, a0 + Math.PI)}` +
+      ` A ${HIT_OUTER} ${HIT_OUTER} 0 1 1 ${point(HIT_OUTER, a0)} Z` +
+      ` M ${point(HIT_INNER, a0)} A ${HIT_INNER} ${HIT_INNER} 0 1 0 ${point(HIT_INNER, a0 + Math.PI)}` +
+      ` A ${HIT_INNER} ${HIT_INNER} 0 1 0 ${point(HIT_INNER, a0)} Z`
+    );
+  }
+  const large = sweep > Math.PI ? 1 : 0;
+  return (
+    `M ${point(HIT_OUTER, a0)} A ${HIT_OUTER} ${HIT_OUTER} 0 ${large} 1 ${point(HIT_OUTER, a1)}` +
+    ` L ${point(HIT_INNER, a1)} A ${HIT_INNER} ${HIT_INNER} 0 ${large} 0 ${point(HIT_INNER, a0)} Z`
+  );
+}
 
 function escapeHtml(text: string): string {
   return text
@@ -59,12 +92,6 @@ function escapeHtml(text: string): string {
 
 function pctText(ratio: number): string {
   return `${(Math.max(0, ratio) * 100).toFixed(1)}%`;
-}
-
-interface SliceNodes {
-  arc: SVGCircleElement;
-  hit: SVGCircleElement;
-  legend: HTMLElement;
 }
 
 export class DonutPie {
@@ -153,9 +180,11 @@ export class DonutPie {
       nodes.arc.setAttribute('stroke-dasharray', dash);
       nodes.arc.setAttribute('stroke-dashoffset', (-offset).toFixed(3));
       nodes.arc.setAttribute('stroke', colors[index % colors.length] ?? PIE_COLORS[0]!);
-      nodes.hit.setAttribute('stroke-dasharray', dash);
-      nodes.hit.setAttribute('stroke-dashoffset', (-offset).toFixed(3));
-      const mid = ((offset + length / 2) / CIRCUMFERENCE) * Math.PI * 2 - Math.PI / 2;
+      // 热区严格对应该扇区的角度区间：起点与描边虚线的起点一致（3 点钟方向，顺时针）
+      const startAngle = (offset / CIRCUMFERENCE) * TAU;
+      const endAngle = ((offset + length) / CIRCUMFERENCE) * TAU;
+      nodes.hit.setAttribute('d', sectorPath(startAngle, endAngle));
+      const mid = ((offset + length / 2) / CIRCUMFERENCE) * TAU;
       const dx = (Math.cos(mid) * OFFSET).toFixed(2);
       const dy = (Math.sin(mid) * OFFSET).toFixed(2);
       nodes.arc.style.setProperty('--pie-dx', `${dx}px`);
@@ -214,14 +243,10 @@ export class DonutPie {
       arc.setAttribute('tabindex', '0');
       arc.dataset.pieIndex = String(index);
 
-      const hit = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      // 热区用环带路径而不是整圆：整圆的 fill 会盖住整个圆盘，
+      // 于是所有指针事件都被最上层（最后一个）扇区吃掉。
+      const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       hit.setAttribute('class', 'pie-hit');
-      hit.setAttribute('cx', '60');
-      hit.setAttribute('cy', '60');
-      hit.setAttribute('r', String(R));
-      hit.setAttribute('stroke', 'transparent');
-      hit.setAttribute('stroke-width', '26');
-      hit.setAttribute('fill', 'none');
       hit.dataset.pieIndex = String(index);
 
       const legend = document.createElement('li');

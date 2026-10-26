@@ -81,6 +81,8 @@ export class CandleChart {
   private data: ChartInput = { closed: [], current: null };
   private all: Candle[] = [];
   private visible = DEFAULT_VISIBLE;
+  /** 默认窗口（跟随历史增长）；用户缩放过一次后固定为那个根数 */
+  private autoVisible = true;
   /** 视窗右端在 all 里的索引（含） */
   private end = 0;
   /** 是否跟随最新一根：平移后停止跟随，数据继续增长也不抢回视窗 */
@@ -123,26 +125,45 @@ export class CandleChart {
   update(input: ChartInput): void {
     this.data = input;
     this.all = input.current ? [...input.closed, input.current] : [...input.closed];
-    if (this.follow || this.end <= 0 || this.end >= this.all.length) {
-      this.end = this.all.length - 1;
+    const total = this.all.length;
+    if (this.autoVisible) {
+      // 默认窗口随历史增长：一开始只有一根也不会把窗口缩成 1 根后不再恢复
+      this.visible = Math.min(DEFAULT_VISIBLE, Math.max(1, total));
+    } else if (this.visible > total) {
+      // 用户缩放过：只在数据变少时收缩，不擅自放大回默认值
+      this.visible = Math.max(1, total);
     }
-    if (this.visible > this.all.length) this.visible = Math.max(1, this.all.length);
+    if (this.follow || this.end <= 0 || this.end >= total - 1) {
+      this.end = Math.max(0, total - 1);
+    }
     this.paint();
   }
 
   destroy(): void {
     const canvas = this.canvas;
-    if (!canvas) return;
-    canvas.removeEventListener('pointermove', this.handlePointerMove);
-    canvas.removeEventListener('pointerleave', this.handlePointerLeave);
-    canvas.removeEventListener('pointerdown', this.handlePointerDown);
-    canvas.removeEventListener('pointerup', this.handlePointerUp);
-    canvas.removeEventListener('pointercancel', this.handlePointerUp);
-    canvas.removeEventListener('wheel', this.handleWheel);
-    this.block?.querySelector('[data-chart-reset]')?.removeEventListener('click', this.handleReset);
+    if (canvas) {
+      canvas.removeEventListener('pointermove', this.handlePointerMove);
+      canvas.removeEventListener('pointerleave', this.handlePointerLeave);
+      canvas.removeEventListener('pointerdown', this.handlePointerDown);
+      canvas.removeEventListener('pointerup', this.handlePointerUp);
+      canvas.removeEventListener('pointercancel', this.handlePointerUp);
+      canvas.removeEventListener('wheel', this.handleWheel);
+      this.block
+        ?.querySelector('[data-chart-reset]')
+        ?.removeEventListener('click', this.handleReset);
+    }
     this.observer?.disconnect();
     this.observer = null;
     this.canvas = null;
+    this.ctx = null;
+    this.tip = null;
+    this.emptyEl = null;
+    this.legendEl = null;
+    this.block = null;
+    this.geometry = null;
+    this.hover = null;
+    this.drag = null;
+    this.all = [];
   }
 
   /* --------------------------------------------------------------- 绘制 */
@@ -556,16 +577,17 @@ export class CandleChart {
     event.preventDefault();
     const point = this.localPoint(event as unknown as PointerEvent);
     const anchor = this.indexAt(geom, point.x);
+    const target = Math.round(this.visible * (event.deltaY > 0 ? 1.18 : 0.85));
+    // 历史不足 MIN_VISIBLE 根时下限跟着历史走，避免窗口比数据还宽
     const next = Math.max(
-      MIN_VISIBLE,
-      Math.min(
-        this.all.length,
-        Math.round(this.visible * (event.deltaY > 0 ? 1.18 : 0.85)),
-      ),
+      Math.min(MIN_VISIBLE, this.all.length),
+      Math.min(this.all.length, target),
     );
     if (next === this.visible) return;
     const ratio = (anchor - geom.from) / Math.max(1, geom.to - geom.from);
     this.visible = next;
+    // 用户主动缩放：之后不再跟随历史自动展开
+    this.autoVisible = false;
     const nextFrom = Math.round(anchor - ratio * (next - 1));
     this.end = Math.min(this.all.length - 1, Math.max(next - 1, nextFrom + next - 1));
     this.follow = this.end >= this.all.length - 1;
@@ -575,6 +597,8 @@ export class CandleChart {
 
   private readonly handleReset = (): void => {
     this.follow = true;
+    // 回到默认窗口，并重新跟随历史增长
+    this.autoVisible = true;
     this.visible = Math.min(DEFAULT_VISIBLE, Math.max(1, this.all.length));
     this.end = this.all.length - 1;
     this.hover = null;
@@ -603,5 +627,19 @@ export function paintStockCharts(
       charts.set(canvas, chart);
     }
     chart.update(input);
+  }
+}
+
+/**
+ * 子树被移除或正文被整体替换前调用：解绑监听与 ResizeObserver，
+ * 避免已经脱离文档的画布还被观察器攥着。
+ */
+export function destroyStockCharts(root: ParentNode | null | undefined): void {
+  if (!root) return;
+  for (const canvas of root.querySelectorAll<HTMLCanvasElement>('canvas[data-chart]')) {
+    const chart = charts.get(canvas);
+    if (!chart) continue;
+    chart.destroy();
+    charts.delete(canvas);
   }
 }

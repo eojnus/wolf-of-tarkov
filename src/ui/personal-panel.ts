@@ -1261,8 +1261,10 @@ export class PersonalPanel {
   private paintWindows(force: boolean): void {
     const view = this.lastView;
     if (!view || this.section !== 'stocks') return;
-    const root = this.root;
-    if (!root) return;
+    // 浮窗在独立的浮层里，不在正文容器内：必须从浮层查节点，
+    // 否则每次刷新都判定为「没有正文」而整块重建，图表缩放与内部滚动都会被重置。
+    const layer = this.floatEl;
+    if (!layer) return;
     for (const id of this.windows.openIds()) {
       const card = view.stocks.cards.find((item) => item.id === id);
       if (!card) {
@@ -1271,7 +1273,7 @@ export class PersonalPanel {
         continue;
       }
       const shape = `${card.shares}|${card.trades.length}`;
-      const scope = root.querySelector<HTMLElement>(`[data-stock-window="${id}"]`);
+      const scope = layer.querySelector<HTMLElement>(`[data-stock-window="${id}"]`);
       const hasBody = (scope?.querySelector('.stock-window-body')?.childElementCount ?? 0) > 0;
       if (scope && hasBody && this.windowShape.get(id) === shape) {
         // 结构没变：只更新数字，不重建正文、不动位置

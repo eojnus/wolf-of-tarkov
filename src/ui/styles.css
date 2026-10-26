@@ -2236,9 +2236,14 @@ select.field {
   position: relative;
 }
 
-/* 小比例扇区：细但可见的最小弧长由脚本保证，这里只保证热区可点 */
+/*
+ * 扇区热区：路径由脚本按扇区角度算出（真实环带，比可见描边更宽）。
+ * 命中只取填充区域，且每块几何互不重叠，因此指针落在哪个分类就一定是哪个分类。
+ */
 .pie-hit {
   fill: transparent;
+  stroke: none;
+  pointer-events: fill;
   cursor: default;
 }
 
