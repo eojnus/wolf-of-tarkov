@@ -143,11 +143,7 @@ export function refreshSellerListings(state: GameState, atMinute: number): void 
       Math.round(property.valuationCents * REAL_ESTATE_RULES.sellerAskingPremium),
     );
     if (Math.abs(target - listing.priceCents) < Math.max(100, listing.priceCents * 0.01)) continue;
-    property.listing = {
-      priceCents: target,
-      listedAtMinute: atMinute,
-      version: listing.version + 1,
-    };
+    setListing(property, target, atMinute);
   }
 }
 

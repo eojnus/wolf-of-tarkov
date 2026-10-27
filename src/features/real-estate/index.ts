@@ -131,6 +131,8 @@ export interface PropertyRecord {
   /** 首次成交时刻；为 null 表示仍是未售新房（保护期适用）。 */
   firstSoldAtMinute: number | null;
   listing: PropertyListing | null;
+  /** 挂牌序号持久化；撤销或转让后也不回退。 */
+  listingVersion: number;
   /** 城市储备土地对玩家的出让价（仅城市持有且可售时非空）。 */
   askPriceCents: number | null;
 }
@@ -364,6 +366,7 @@ export function seedBaseHousingStock(
       acquiredAtMinute: nowMinute,
       firstSoldAtMinute: isFree ? nowMinute : null,
       listing: null,
+      listingVersion: 0,
       askPriceCents: null,
     });
   });
@@ -393,6 +396,7 @@ export function seedReserveLandStock(state: RealEstateState, nowMinute: number):
       acquiredAtMinute: nowMinute,
       firstSoldAtMinute: null,
       listing: null,
+      listingVersion: 0,
       askPriceCents: Math.round(valuation * REAL_ESTATE_RULES.landAskPremium),
     });
   }
@@ -454,6 +458,7 @@ export function deliverHousingUnits(
       acquiredAtMinute: input.deliveredAtMinute,
       firstSoldAtMinute: null,
       listing: null,
+      listingVersion: 0,
       askPriceCents: null,
     });
     created += 1;
@@ -542,7 +547,9 @@ export function setListing(
   atMinute: number,
 ): PropertyListing {
   assertListingPrice(property, priceCents);
-  const version = (property.listing?.version ?? 0) + 1;
+  const version = property.listingVersion + 1;
+  if (!Number.isSafeInteger(version)) throw new BusinessError('LISTING_VERSION_OVERFLOW', '挂牌版本已超出范围');
+  property.listingVersion = version;
   property.listing = { priceCents, listedAtMinute: atMinute, version };
   return property.listing;
 }
@@ -558,11 +565,7 @@ export function ensureAskingListing(property: PropertyRecord, atMinute: number):
   if (property.owner.kind === 'player') return;
   if (property.listing !== null) return;
   if (property.owner.kind === 'household') return;
-  property.listing = {
-    priceCents: initialAskingPriceCents(property.valuationCents),
-    listedAtMinute: atMinute,
-    version: 1,
-  };
+  setListing(property, initialAskingPriceCents(property.valuationCents), atMinute);
 }
 
 /* ------------------------------------------------------------ 报价辅助 */

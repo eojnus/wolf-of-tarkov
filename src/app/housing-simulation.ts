@@ -12,10 +12,12 @@
  *   8. 月度指标固化（供政治满意度读取）。
  *
  * 成交只通过 `app/real-estate.executePurchase` 写入：资金、产权、挂牌、记录同一次提交。
- * 任何一笔失败都只跳过该资产，不伪造成交、不静默改价。
+ * 预先跳过无法收款或资金不足的资产；意外异常向外传播并回滚整个月结。
  */
 
 import { monthStartMinute } from '../core/calendar';
+import { MAX_MONEY_CENTS } from '../core/money';
+import { BusinessError } from '../core/errors';
 import { TIME } from '../content/config';
 import {
   HOUSING_GROUPS,
@@ -26,7 +28,7 @@ import {
   type HousingGroupConfig,
   type HousingIncomeTier,
 } from '../content/real-estate';
-import { externalAccount, subjectBalance, transferFunds } from '../features/finance';
+import { availableSubjectBalance, balanceOf, externalAccount, subjectBalance, transferFunds } from '../features/finance';
 import {
   accrueMonthlyDemand,
   affordableHouseholds,
@@ -47,6 +49,7 @@ import {
 import {
   homeValuationCents,
   protectionActive,
+  setListing,
   type PropertyRecord,
 } from '../features/real-estate';
 import { activeTermOf } from '../features/government';
@@ -55,6 +58,7 @@ import { liveCityEconomyOf } from './city-statistics';
 import {
   createLandOffers,
   districtFactorOf,
+  ownerAccountRef,
   purchaseHomeByHousehold,
   purchaseHomeByInvestor,
   refreshLandAskPrices,
@@ -282,11 +286,7 @@ function releasePreviousHome(
   }
   if (!oldest) return;
   oldest.occupancy = 'vacant';
-  oldest.listing = {
-    priceCents: Math.max(REAL_ESTATE_RULES.minListingPriceCents, oldest.valuationCents),
-    listedAtMinute: atMinute,
-    version: (oldest.listing?.version ?? 0) + 1,
-  };
+  setListing(oldest, Math.max(REAL_ESTATE_RULES.minListingPriceCents, oldest.valuationCents), atMinute);
 }
 
 /**
@@ -325,10 +325,15 @@ function runHouseholdMatching(
       for (const kind of order) {
         const want = kind === 'first-time' ? group.wantFirstTime : group.wantUpgrade;
         if (want < 1) continue;
-        if (kind === 'upgrade' && group.ownedHouseholds < 1) continue;
+        // 仅有可追踪旧房时才允许置换，不能消费宏观家庭意愿却无房可释放。
+        if (kind === 'upgrade' && !draft.realEstate.properties.some((property) =>
+          property.kind === 'home' && property.owner.kind === 'household' &&
+          property.owner.id === group.id && property.occupancy === 'owner-occupied'
+        )) continue;
         const candidates = candidatesForGroup(config, homes, group.id);
         const pick = candidates.find(
           (candidate) =>
+            balanceOf(draft.finance, ownerAccountRef(candidate.property.owner)) <= MAX_MONEY_CENTS - candidate.priceCents &&
             affordableHouseholds(group, config, {
               savingsCents: savings,
               priceCents: candidate.priceCents,
@@ -336,18 +341,14 @@ function runHouseholdMatching(
             }) >= 1,
         );
         if (!pick) continue;
-        try {
-          purchaseHomeByHousehold(draft, {
-            groupId: group.id,
-            propertyId: pick.property.id,
-            atMinute: ctx.atMinute,
-            monthKey: ctx.monthKey,
-            operationId: `housing-sale:${ctx.monthKey}:${pick.property.id}`,
-          });
-        } catch {
-          // 该房源本次不可成交（价格/资金/保护期），跳过，不伪造成交
-          continue;
-        }
+        // 异常必须向外传播，让 GameStore.run 回滚整个月结。
+        purchaseHomeByHousehold(draft, {
+          groupId: group.id,
+          propertyId: pick.property.id,
+          atMinute: ctx.atMinute,
+          monthKey: ctx.monthKey,
+          operationId: `housing-sale:${ctx.monthKey}:${pick.property.id}`,
+        });
         consumeDemand(group, kind);
         if (kind === 'first-time') markOwnershipGained(group);
         else releasePreviousHome(draft, group, pick.property.id, ctx.atMinute);
@@ -378,18 +379,15 @@ function runInvestorPurchases(
       if (priceCents <= 0) continue;
       if (priceCents > entity.maxTicketCents) continue;
       if (priceCents > Math.round(property.valuationCents * entity.bidPremium)) continue;
-      if (subjectBalance(draft.finance, 'investor', entity.id) < priceCents) continue;
-      try {
-        purchaseHomeByInvestor(draft, {
-          investorId: entity.id,
-          propertyId: property.id,
-          atMinute: ctx.atMinute,
-          monthKey: ctx.monthKey,
-          operationId: `housing-ai:${ctx.monthKey}:${property.id}`,
-        });
-      } catch {
-        continue;
-      }
+      if (availableSubjectBalance(draft.finance, 'investor', entity.id) < priceCents) continue;
+      if (balanceOf(draft.finance, ownerAccountRef(property.owner)) > MAX_MONEY_CENTS - priceCents) continue;
+      purchaseHomeByInvestor(draft, {
+        investorId: entity.id,
+        propertyId: property.id,
+        atMinute: ctx.atMinute,
+        monthKey: ctx.monthKey,
+        operationId: `housing-ai:${ctx.monthKey}:${property.id}`,
+      });
       sales += 1;
       break;
     }
@@ -446,6 +444,97 @@ function pressureTriple(draft: GameState): HousingIncomeTriple {
   return result;
 }
 
+/**
+ * 对账人口月结的四条实际转层流：按来源人数比例同步资金、居住分配和具体产权。
+ * 自然增长不会触发资金划拨；同月各流向均使用转层前快照，避免连续转两次。
+ * 家庭和房屋为整数，向下取整，余额按分向下取整，剩余留在来源群组。
+ */
+function reconcilePopulationFlows(
+  draft: GameState,
+  ctx: { monthKey: string; atMinute: number },
+): void {
+  const record = draft.population.records.find((item) => item.monthKey === ctx.monthKey);
+  if (!record) return;
+  const flows = [
+    { from: 'low', to: 'mid', people: record.flow.lm, base: record.classesBefore.low },
+    { from: 'mid', to: 'low', people: record.flow.ml, base: record.classesBefore.mid },
+    { from: 'mid', to: 'high', people: record.flow.mh, base: record.classesBefore.mid },
+    { from: 'high', to: 'mid', people: record.flow.hm, base: record.classesBefore.high },
+  ] as const;
+  const snapshots = new Map(draft.housing.groups.map((group) => [group.id, {
+    balance: subjectBalance(draft.finance, 'household', group.id),
+    owned: group.ownedHouseholds,
+    first: group.wantFirstTime,
+    upgrade: group.wantUpgrade,
+    properties: draft.realEstate.properties.filter((property) =>
+      property.owner.kind === 'household' && property.owner.id === group.id
+    ).sort((left, right) => left.id.localeCompare(right.id)),
+  }]));
+  const offsets = new Map<string, number>();
+  for (const flow of flows) {
+    const from = groupStateOf(draft, flow.from);
+    const to = groupStateOf(draft, flow.to);
+    const snapshot = snapshots.get(flow.from);
+    if (!from || !to || !snapshot || flow.base <= 0 || flow.people <= 0) continue;
+    const ratio = clamp(flow.people / flow.base, 0, 1);
+    const amount = Math.floor(snapshot.balance * ratio);
+    if (amount > 0) {
+      transferFunds(draft.finance, {
+        operationId: `housing-reclassification:${ctx.monthKey}:${flow.from}:${flow.to}`,
+        atMinute: ctx.atMinute, monthKey: ctx.monthKey,
+        from: { owner: 'household', id: flow.from },
+        to: { owner: 'household', id: flow.to },
+        amount, category: 'housing-reclassification', memo: '居民阶层变动随家庭转移储蓄',
+      });
+    }
+    const owned = Math.floor(snapshot.owned * ratio);
+    const first = snapshot.first * ratio;
+    const upgrade = snapshot.upgrade * ratio;
+    from.ownedHouseholds -= owned;
+    to.ownedHouseholds += owned;
+    from.wantFirstTime -= first;
+    to.wantFirstTime += first;
+    from.wantUpgrade -= upgrade;
+    to.wantUpgrade += upgrade;
+    const offset = offsets.get(flow.from) ?? 0;
+    const count = Math.floor(snapshot.properties.length * ratio);
+    for (const property of snapshot.properties.slice(offset, offset + count)) {
+      property.owner = { kind: 'household', id: flow.to };
+    }
+    offsets.set(flow.from, offset + count);
+  }
+}
+
+/** 家庭数取整为零时，不能让剩余储蓄或住宅永久滞留在空群组。 */
+function reconcileEmptyGroups(draft: GameState, ctx: { monthKey: string; atMinute: number }): void {
+  const record = draft.population.records.find((item) => item.monthKey === ctx.monthKey);
+  for (const source of draft.housing.groups) {
+    if (source.households !== 0) continue;
+    const balance = subjectBalance(draft.finance, 'household', source.id);
+    const properties = draft.realEstate.properties.filter((property) =>
+      property.owner.kind === 'household' && property.owner.id === source.id
+    );
+    if (balance === 0 && properties.length === 0) continue;
+    const preferred = source.id === 'low' ? ['mid', 'high'] :
+      source.id === 'high' ? ['mid', 'low'] :
+      (record && record.flow.mh > record.flow.ml ? ['high', 'low'] : ['low', 'high']);
+    const target = preferred.map((id) => groupStateOf(draft, id)).find((group) => group && group.households > 0);
+    if (!target) throw new BusinessError('HOUSING_NO_RECIPIENT', '没有可接收空群组资产的家庭，住房月结已回滚');
+    if (balance > 0) transferFunds(draft.finance, {
+      operationId: `housing-reclassification:${ctx.monthKey}:${source.id}:remainder`,
+      atMinute: ctx.atMinute, monthKey: ctx.monthKey,
+      from: { owner: 'household', id: source.id }, to: { owner: 'household', id: target.id },
+      amount: balance, category: 'housing-reclassification', memo: '空群组剩余家庭资产对账',
+    });
+    for (const property of properties) {
+      property.owner = { kind: 'household', id: target.id };
+      if (property.occupancy !== 'owner-occupied') continue;
+      if (target.ownedHouseholds < target.households) target.ownedHouseholds += 1;
+      else property.occupancy = 'vacant';
+    }
+  }
+}
+
 /* -------------------------------------------------------------- 月结入口 */
 
 /**
@@ -459,7 +548,9 @@ export function settleHousingMonth(
   if (existing) return existing;
 
   const ctx = { monthKey: input.monthKey, atMinute: input.boundaryMinute };
+  reconcilePopulationFlows(draft, ctx);
   syncHouseholds(draft.housing, draft.population.classes);
+  reconcileEmptyGroups(draft, ctx);
   for (const group of draft.housing.groups) {
     settleGroupIncome(draft, group, groupConfig(group.id), ctx);
     accrueMonthlyDemand(group);

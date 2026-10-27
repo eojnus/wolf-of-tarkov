@@ -132,6 +132,7 @@ const CATEGORIES = new Set([
   'land-sale',
   'housing-income',
   'housing-consumption',
+  'housing-reclassification',
 ]);
 
 function assertNumber(value: unknown, label: string): number {
@@ -2324,13 +2325,14 @@ function validateRealEstate(
       }
     }
 
+    const listingVersion = assertNonNegativeInt(property.listingVersion, `${label}挂牌版本高水位`);
     if (property.listing === undefined) fail(`${label}缺少挂牌字段`);
     if (property.listing !== null) {
       const listing = assertObject(property.listing, `${label}挂牌`);
       const price = assertNonNegativeInt(listing.priceCents, `${label}挂牌价`);
       if (price < REAL_ESTATE_RULES.minListingPriceCents) fail(`${label}挂牌价低于下限`);
       const version = assertNonNegativeInt(listing.version, `${label}挂牌版本`);
-      if (version < 1) fail(`${label}挂牌版本必须从 1 开始`);
+      if (version < 1 || version !== listingVersion) fail(`${label}挂牌版本与高水位不一致`);
       const listedAt = assertNonNegativeInt(listing.listedAtMinute, `${label}挂牌时间`);
       if (listedAt > totalMinute) fail(`${label}挂牌时间晚于当前游戏时间`);
     }

@@ -106,7 +106,8 @@ export type TransactionCategory =
   | 'land-purchase'
   | 'land-sale'
   | 'housing-income'
-  | 'housing-consumption';
+  | 'housing-consumption'
+  | 'housing-reclassification';
 
 export const CATEGORY_LABELS: Record<TransactionCategory, string> = {
   initial: '初始资金',
@@ -141,6 +142,7 @@ export const CATEGORY_LABELS: Record<TransactionCategory, string> = {
   'land-sale': '出售土地',
   'housing-income': '居民收入',
   'housing-consumption': '居民消费',
+  'housing-reclassification': '居民阶层资产转移',
 };
 
 /**
@@ -165,6 +167,7 @@ const NON_FLOW_CATEGORIES = new Set<TransactionCategory>([
   'home-sale',
   'land-purchase',
   'land-sale',
+  'housing-reclassification',
 ]);
 
 /** 不计入「企业经营收支」的类别：出资、分红、清算、融资与回购属于资本行为。 */

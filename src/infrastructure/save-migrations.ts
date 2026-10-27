@@ -1,5 +1,5 @@
 /**
- * 存档迁移 —— v1 → v17 的完整版本链与受控旧数据修复。
+ * 存档迁移 —— v1 → v18 的完整版本链与受控旧数据修复。
  *
  * 这里保留历史上所有迁移步骤，顺序与数据保留行为不得改变；
  * 旧的修复规则（无偿配股回收、失效报价与预留清理、缺失股权簿补建）也集中在此。
@@ -1166,6 +1166,14 @@ function upgradeV16toV17(state: Record<string, unknown>): Record<string, unknown
   return next;
 }
 
+/** v17 → v18：为每处资产保留挂牌版本高水位，既有挂牌保持原版本。 */
+export function upgradeV17toV18(state: Record<string, unknown>): Record<string, unknown> {
+  const next = structuredClone(state);
+  const estate = next.realEstate as { properties: Array<{ listing: { version: number } | null; listingVersion?: number }> };
+  for (const property of estate.properties) property.listingVersion = property.listing?.version ?? 0;
+  return next;
+}
+
 export function migrateIfNeeded(
   root: Record<string, unknown>,
   version: number,
@@ -1242,6 +1250,10 @@ export function migrateIfNeeded(
   if (cursor === 16) {
     state = upgradeV16toV17(state);
     cursor = 17;
+  }
+  if (cursor === 17) {
+    state = upgradeV17toV18(state);
+    cursor = 18;
   }
   if (cursor !== SAVE.formatVersion) {
     fail(`不支持的存档版本 ${version}`);

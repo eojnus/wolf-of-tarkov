@@ -393,9 +393,10 @@ export const SAVE = {
    *     `finance` 新增 `household` 主体账户与 6 个新流水类别。
    *     旧档在迁移时按迁移时刻的人口建立群组、一次性注入卖方与 AI 资金、
    *     建立晴川公寓 100 套与 4 块储备土地，并为已完成住房新区补齐住宅单元（幂等）。
+   * v18：为每处房产增加持久挂牌版本高水位，旧档继承当前挂牌版本。
    *     纯校验调整（例如宣传强度按小数校验、行情调度校验）不占版本号。
    */
-  formatVersion: 17,
+  formatVersion: 18,
   formatTag: 'city-wealth-sim',
   dbName: 'city-wealth-sim',
   dbVersion: 1,
