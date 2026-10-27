@@ -51,6 +51,11 @@ export interface CityScene {
   readonly scene: THREE.Scene;
   /** 当前布局对应的建筑实例（顺序与 layout.buildings 一致）。 */
   readonly buildings: readonly BuildingHandle[];
+  /**
+   * 由城市边界推导的基础雾距离（不含天气修饰）。
+   * 雾的颜色与远近由环境系统按天气调整，这里只提供城市规模带来的基数。
+   */
+  readonly fogBase: { readonly near: number; readonly far: number };
   /** 按稳定 id 增量同步布局；幂等，不销毁重建整个场景。 */
   syncLayout(layout: CityLayoutView): void;
   dispose(): void;
@@ -67,7 +72,6 @@ const PALETTE = {
   leaf: 0x5f7f52,
 };
 
-const SKY_COLOR = 0xb8cddc;
 const CROSS_ROAD_Z = 0;
 
 export function disposeObject(root: THREE.Object3D): void {
@@ -82,6 +86,26 @@ export function disposeObject(root: THREE.Object3D): void {
       withMap.map?.dispose();
       material.dispose();
     }
+  });
+}
+
+/**
+ * 实体网格的阴影参与规则 —— 只在实例创建或模型挂载时调用一次。
+ *
+ * 只对**不透明 Mesh** 开启投影：Sprite 标签、透明玻璃、道路虚线等装饰不参与投影，
+ * 避免标签在路上投出方块、玻璃投出实心影子；所有实体表面都接收阴影，
+ * 因此地面、路面、墙面能被建筑、树木与人物投下影子。
+ * **不在渲染循环里遍历场景重设这些标记。**
+ */
+export function applySolidShadowFlags(root: THREE.Object3D): void {
+  root.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const material = mesh.material;
+    const materials = Array.isArray(material) ? material : [material];
+    const transparent = materials.some((item) => item.transparent || item.opacity < 1);
+    mesh.castShadow = !transparent;
+    mesh.receiveShadow = true;
   });
 }
 
@@ -323,7 +347,6 @@ function buildShopBuilding(building: LayoutBuilding): BuildingHandle {
   ): THREE.Mesh => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
     mesh.position.set(...position);
-    mesh.receiveShadow = true;
     placeholder.add(mesh);
     return mesh;
   };
@@ -498,6 +521,10 @@ function buildShopBuilding(building: LayoutBuilding): BuildingHandle {
   box(frameMaterial, [0.38, 0.54, 0.38], [counterX, baseH + 1.33, counterZ + 1.0]);
   box(glassMaterial, [0.4, 0.24, 0.04], [counterX, baseH + 1.48, counterZ - 0.85]);
 
+  // 盒体与构件参与投影；招牌面是贴在墙面上的贴花，只接收不投影
+  applySolidShadowFlags(placeholder);
+  signFace.castShadow = false;
+
   const label = makeBuildingLabel(building);
   label.position.set(building.position.x, height + 2.6, building.position.z);
 
@@ -531,8 +558,6 @@ function buildBuilding(building: LayoutBuilding): BuildingHandle {
   });
   const body = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
   body.position.set(building.position.x, height / 2, building.position.z);
-  body.castShadow = false;
-  body.receiveShadow = true;
 
   // 檐口
   const corniceMaterial = new THREE.MeshStandardMaterial({
@@ -608,6 +633,7 @@ function buildBuilding(building: LayoutBuilding): BuildingHandle {
   const group = new THREE.Group();
   const placeholder = new THREE.Group();
   placeholder.add(body, cornice, door, windows, plaza);
+  applySolidShadowFlags(placeholder);
   group.add(placeholder, label);
   group.userData.buildingId = building.id;
 
@@ -658,13 +684,8 @@ export function applyBuildingModel(handle: BuildingHandle, model: THREE.Object3D
   model.position.z += building.position.z - center.z;
   model.position.y -= box.min.y;
 
-  model.traverse((child) => {
-    const mesh = child as THREE.Mesh;
-    if (mesh.isMesh) {
-      mesh.castShadow = false;
-      mesh.receiveShadow = true;
-    }
-  });
+  // GLB 异步加载成功后同样套用统一规则：不透明实体投影，玻璃/贴花只接收
+  applySolidShadowFlags(model);
 
   handle.group.add(model);
   handle.placeholder.visible = false;
@@ -758,6 +779,11 @@ function buildRoad(road: LayoutRoad, bounds: LayoutBounds): THREE.Group {
     }
   }
 
+  // 路面是贴地薄板：只接收阴影，参与投影只会与地面互相打架（自身阴影痤疮）
+  group.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (mesh.isMesh) mesh.receiveShadow = true;
+  });
   return group;
 }
 
@@ -786,6 +812,7 @@ function buildTrees(): THREE.Group {
     crown.position.set(x, 3.4, z);
     group.add(trunk, crown);
   }
+  applySolidShadowFlags(group);
   return group;
 }
 
@@ -827,17 +854,11 @@ class CitySceneImpl implements CityScene {
   >();
   private readonly roadHandles = new Map<string, RoadHandle>();
   private currentBuildings: BuildingHandle[] = [];
+  private fogBaseValue: { near: number; far: number } = { near: 70, far: 165 };
 
   constructor() {
-    this.scene.background = new THREE.Color(SKY_COLOR);
-    this.scene.fog = new THREE.Fog(SKY_COLOR, 70, 165);
-
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x74805f, 1.15);
-    const sun = new THREE.DirectionalLight(0xfff3e0, 1.5);
-    sun.position.set(38, 54, 24);
-    const ambient = new THREE.AmbientLight(0xffffff, 0.18);
-    this.scene.add(hemi, sun, ambient);
-
+    // 灯光、天空与雾统一由 world/environment 接管：场景本身不再持有固定太阳，
+    // 避免旧太阳与新太阳同时照亮场景。
     const groundMaterial = new THREE.MeshStandardMaterial({ color: PALETTE.ground, roughness: 1 });
     // 单位盒按 bounds 缩放：城区扩张时只改缩放与位置，不重建地面几何体。
     this.ground = new THREE.Mesh(new THREE.BoxGeometry(1, 0.4, 1), groundMaterial);
@@ -847,6 +868,10 @@ class CitySceneImpl implements CityScene {
 
   get buildings(): readonly BuildingHandle[] {
     return this.currentBuildings;
+  }
+
+  get fogBase(): { readonly near: number; readonly far: number } {
+    return this.fogBaseValue;
   }
 
   syncLayout(layout: CityLayoutView): void {
@@ -862,10 +887,10 @@ class CitySceneImpl implements CityScene {
     this.ground.position.set((bounds.minX + bounds.maxX) / 2, -0.2, (bounds.minZ + bounds.maxZ) / 2);
 
     // 雾距离随城市规模：远端仍落在摄像机 far 之内，扩张后不出现「突然出现」的地块。
+    // 这里只记录**基础**距离；实际颜色与远近再由环境系统按昼夜与天气修饰。
     const span = Math.max(width, depth);
     const fogFar = Math.min(CAMERA.far - 20, Math.max(165, span * 1.35));
-    const fogNear = Math.min(70, fogFar * 0.45);
-    this.scene.fog = new THREE.Fog(SKY_COLOR, fogNear, fogFar);
+    this.fogBaseValue = { near: Math.min(70, fogFar * 0.45), far: fogFar };
   }
 
   private syncRoads(roads: readonly LayoutRoad[], bounds: LayoutBounds): void {

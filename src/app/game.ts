@@ -37,6 +37,7 @@ import { CapitalCommands } from './capital';
 import { GameCommands } from './commands';
 import { SuppliesCommands } from './supplies';
 import { EstateCommands } from './real-estate-commands';
+import { pushEnvironment } from './environment';
 import { entryAllows, entryDeniedMessage, type EntryCapability } from './entry-policy';
 import { buildEstateView } from './real-estate-view';
 import { buildSuppliesView } from './supplies-view';
@@ -383,7 +384,16 @@ export class Game {
       this.accumulateSimulation(Math.min(rawDelta, TIME.maxSimDeltaMs));
     }
 
-    this.world.render(Math.min(rawDelta, 200) / 1000);
+    // 环境：太阳、天空、雾跟随游戏时间；暂停时 dt 传 0，雨滴冻结而状态不变。
+    const renderDeltaSeconds = Math.min(rawDelta, 200) / 1000;
+    pushEnvironment(
+      this.world,
+      this.store.state,
+      this.simAccumulator,
+      paused ? 0 : renderDeltaSeconds,
+    );
+
+    this.world.render(renderDeltaSeconds);
     this.hud.setHint(
       paused || this.panels.isOpen || !this.collisionReady
         ? null
@@ -1075,6 +1085,8 @@ export class Game {
     this.simAccumulator = 0;
     this.lastFrameMs = 0;
     this.hud.setTime(dateAtMinute(this.store.state.clock.totalMinute, TIME.calendar));
+    // 读档后第一帧之前就把环境对齐到存档时间与天气，避免出现旧天气的一帧
+    pushEnvironment(this.world, this.store.state, 0, 0);
     this.syncClockUi();
     this.syncPanelPresentation();
   }
@@ -1120,6 +1132,7 @@ export class Game {
     this.lastFrameMs = 0;
     this.panels.close();
     this.hud.setTime(dateAtMinute(this.store.state.clock.totalMinute, TIME.calendar));
+    pushEnvironment(this.world, this.store.state, 0, 0);
     this.hud.setSaveState('', 'idle');
     this.syncClockUi();
     this.syncPanelPresentation();

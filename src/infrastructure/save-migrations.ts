@@ -1,5 +1,5 @@
 /**
- * 存档迁移 —— v1 → v18 的完整版本链与受控旧数据修复。
+ * 存档迁移 —— v1 → v19 的完整版本链与受控旧数据修复。
  *
  * 这里保留历史上所有迁移步骤，顺序与数据保留行为不得改变；
  * 旧的修复规则（无偿配股回收、失效报价与预留清理、缺失股权簿补建）也集中在此。
@@ -30,6 +30,7 @@ import {
   policyEffectsFor,
 } from '../features/government';
 import { createBaseLayout } from '../features/city-layout';
+import { createEnvironmentState } from '../features/environment';
 import { createHousingState } from '../features/housing';
 import { createRealEstateState } from '../features/real-estate';
 import { createCityDevelopmentState } from '../features/city-development';
@@ -1174,6 +1175,26 @@ export function upgradeV17toV18(state: Record<string, unknown>): Record<string, 
   return next;
 }
 
+/**
+ * v18 → v19：新增环境（天气）切片。
+ *
+ * 天气不能被游戏时间可靠推导（抽签与持续时长都是随机的），所以必须进存档；
+ * 太阳方向、天空颜色、雾距离与环境光都由「时间 + 天气」推导，不保存。
+ *
+ * 旧档使用**明确、合法、可复现**的默认环境：按迁移时刻初始化晴天，
+ * 下一次天气调度由配置种子与时长范围确定。不重放历史天气、不追补过去过渡，
+ * 也不改动金钱、时间、建筑、天气以外的任何字段。
+ */
+export function upgradeV18toV19(state: Record<string, unknown>): Record<string, unknown> {
+  const next = structuredClone(state);
+  const clock = (next.clock ?? {}) as Record<string, unknown>;
+  const rawMinute = typeof clock.totalMinute === 'number' ? clock.totalMinute : 0;
+  const nowMinute = Number.isSafeInteger(rawMinute) && rawMinute > 0 ? rawMinute : 0;
+  const draft = next as unknown as GameState;
+  draft.environment = createEnvironmentState(nowMinute);
+  return next;
+}
+
 export function migrateIfNeeded(
   root: Record<string, unknown>,
   version: number,
@@ -1254,6 +1275,10 @@ export function migrateIfNeeded(
   if (cursor === 17) {
     state = upgradeV17toV18(state);
     cursor = 18;
+  }
+  if (cursor === 18) {
+    state = upgradeV18toV19(state);
+    cursor = 19;
   }
   if (cursor !== SAVE.formatVersion) {
     fail(`不支持的存档版本 ${version}`);

@@ -14,7 +14,7 @@ core/          业务无关的基础能力
   money.ts errors.ts
 
 content/       数值与文案配置（不写规则逻辑）
-  config.ts    城市/品牌/时间/行情节奏/存档版本
+  config.ts    城市/品牌/时间/环境（昼夜·天气·阴影）/行情节奏/存档版本
   business.ts  企业与产品市场参数、AI 公司配置
   capital.ts   股权、融资、估值、宣传、流动性、做市愿售、产品—股价联动参数
   population.ts 人口增长、阶层流动、经营与证券冲击参数
@@ -44,6 +44,7 @@ features/      业务模型与纯计算（只认识自己的切片）
   city-layout  逻辑地图：边界、道路、地块、建筑与稳定标识（无 Three.js / DOM / 结算）
   real-estate  产权、入住、挂牌、AI 土地报价与成交记录（不保存余额）
   housing      收入群组的家庭数、居住分配、购房意愿与住房压力（不保存余额与人口权威）
+  environment  天气切片、天气调度与昼夜/天气的表现采样（不依赖 Three.js / DOM / 存储）
   banking / employment / living / loan / business-ai
 
 app/           跨模块协调：命令、模拟、查询、视图
@@ -76,12 +77,13 @@ app/           跨模块协调：命令、模拟、查询、视图
   real-estate-commands.ts 房地产玩家命令（买入、挂牌、撤销、接受/拒绝报价）
   real-estate-view.ts    住房与土地面板的只读视图
   housing-simulation.ts  住房月结：收入/消费、需求、匹配成交、AI 投资与指标固化
+  environment.ts         环境协调：表现用分钟与天气切片 → world（不推进时间、不写状态）
 
 infrastructure/ 存档
   storage.ts        入口：槽位读写、快照、导入导出、读档编排
   save-types.ts     公共类型（不依赖任何实现）
   save-database.ts  IndexedDB 原始读写（不理解玩法）
-  save-migrations.ts v1 → v16 迁移链、受控旧数据修复、读档兼容规范化
+  save-migrations.ts v1 → v19 迁移链、受控旧数据修复、读档兼容规范化
   save-validation.ts 字段与跨切片一致性校验
 
 ui/            只渲染只读视图并提交命令；不持有经济数据
@@ -96,6 +98,7 @@ ui/            只渲染只读视图并提交命令；不持有经济数据
   estate-panel.ts      晴川公寓现场交易页与个人财务只读持有明细，共用房地产视图
   导航与窗口的现行行为以以上表现层模块实现为准
 world/         Three.js 场景、角色与控制
+  environment/ 天空穹顶与星空、唯一太阳与阴影、降雨、环境控制器（只读显式采样）
   buildings/   独立模块化建筑视觉库；plan.ts 是规划尺寸解析的唯一入口，尚未接入正式地图
 dev/           building-prototype.ts：独立预览页入口，不属于正式游戏启动链路
 ```
@@ -108,7 +111,7 @@ dev/           building-prototype.ts：独立预览页入口，不属于正式�
 clock · finance · living · loan · employment · population · politics · elections ·
 government · enterprises · technology · talent · businessAi · equity · securities ·
 financing · governance · promotion · cityStatistics · cityLayout · cityDevelopment ·
-realEstate · housing · settings · world · reports · settlement
+realEstate · housing · environment · settings · world · reports · settlement
 ```
 
 | 数据 | 权威来源 | 说明 |
@@ -129,6 +132,7 @@ realEstate · housing · settings · world · reports · settlement
 | 建设阶段 | `cityDevelopment` | 永久防重复靠单调任期高水位与阶段预留位图，不依赖 24 条政府历史 |
 | 竞选资源 | `elections.candidates[*]` | 基础 + 赞助 − 已使用；未使用部分届末失效，不结转 |
 | 当选与政策 | `government.currentHolder` / 任期 `effects` 快照 | 政策只从当选任期快照推导，不接受外部写入 |
+| 天气 | `environment` | 只存不能由时间推导的字段；太阳方向、天空颜色、雾与环境光由「时间 + 天气」推导 |
 
 同一个事实只允许有一个权威；重复字段（持仓股数、速度镜像）只在同一次提交里同步，
 读档时核对，不做静默覆盖。
@@ -586,4 +590,68 @@ AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − �
 - 未来正式接入须另行实施：保留世界布局与模型代次检查，将声明包络写入现有 collider 对象，
   与旧 GLB 路径互斥，并显式处理释放。本次没有修改这些正式场景行为。
 - 视觉层不读写房地产、住房、资金或逻辑地图；窗户、阳台与楼层数量不反推住房套数。
-  房地产 v18 的成交、挂牌高水位、预留、月结与迁移实现保持原样，存档版本不变。
+  房地产 v18 的成交、挂牌高水位、预留、月结与迁移实现保持原样；存档因环境系统升到 v19，与此原型无关。
+
+## 16. 环境系统（昼夜、天气与统一阴影，存档 v19）
+
+### 16.1 四层职责
+
+| 层 | 位置 | 负责 | 不负责 |
+| --- | --- | --- | --- |
+| 配置 | `content/config.ts` 的 `ENVIRONMENT` | 昼夜关键帧、太阳高度上限、天气概率/时长/过渡/修饰量、阴影预算、雨量上限 | 不含任何规则判断 |
+| 纯计算 | `features/environment` | 天气切片、调度求解、昼夜与天气的表现采样 | 不依赖 Three.js / DOM / 浏览器存储 / 经济模块 |
+| 表现 | `world/environment/*` | 天空穹顶与星空、唯一太阳与阴影、降雨、雾 | 不导入 GameStore、不决定天气、不写状态 |
+| 协调 | `app/environment.ts` | 把「表现用分钟 + 天气切片」交给 world | 不推进时间、不写状态、不决定天气 |
+
+`world/scene.ts` 不再持有固定灯光、天空或雾：场景只描述地面、道路、建筑与标识，
+环境表现全部由 `world/environment` 接管，因此不存在「旧太阳 + 新太阳」叠加。
+
+### 16.2 时间权威与视觉平滑
+
+- 唯一时间权威仍是 `clock.totalMinute`；太阳方向由它按余弦高度角模型解算
+  （日出 06:00、日落 18:00、正午最高 60°），不增加独立昼夜时钟，也不读系统时间。
+- 主循环本来就把真实 dt 累积成小数分钟再取整提交，取整后留下的余量现在同时用于环境：
+  表现分钟 = 权威整数分钟 + 余量（夹在 `[0, 1)`）。它只影响画面，不写状态、不进存档。
+- 因此整数分钟之间太阳是连续移动的，而「权威时间」始终只有一份。
+- 暂停（手动暂停 / 暂停菜单 / 页面隐藏）时余量不再增长，太阳与天空停在当前时刻；
+  业务面板打开不暂停模拟，环境照常推进。
+
+### 16.3 天气调度
+
+- 四种天气：晴、阴、雨、大雾。概率、持续时长、过渡时长与修饰量全部在配置里。
+- 调度只发生在游戏分钟推进时（`app/timeAdvance` 的每个 1 分钟段），不按帧抽签；
+  当前天气结束才抽下一种，过渡从该时刻起算。
+- 跳时（上班、休息、睡觉、推进到下一事件）一次跨越多个周期时按周期推进，
+  但有步数上限：超限就直接落到目标时刻重新抽签，不逐帧重播历史，也不会形成无界循环。
+- 天气使用独立随机游标（mulberry32），与行情、人口、资本等经济随机完全隔离。
+- 天气只做**修饰**：在昼夜基准上混合灰调、乘减太阳强度、压缩雾距离、压低星空、给出雨量，
+  不复制「时间 × 天气」的预设矩阵。
+
+### 16.4 阴影与渲染成本
+
+- 全场景一盏太阳方向光，建筑不各自创建太阳；没有月光投影、没有新增后期处理。
+- 阴影相机是有界正交盒（默认 ±52 m，随质量档变化），中心跟随玩家；光源与目标一起平移，
+  因此阴影只覆盖玩家附近，但也不按屏幕可见性裁掉会向可见区域投影的建筑。
+- 实体网格投影，标签/玻璃/路面薄板只接收；判定集中在 `applySolidShadowFlags`，
+  只在创建实例或 GLB 挂载后执行一次，不在渲染循环里遍历城市。
+- 太阳低于 0.06 弧度后停止投影更新（不再渲染阴影贴图）并把阴影强度归零，
+  高于该值 0.03 以上才恢复（回滞防抖）。**不切换 `castShadow`**：光源阴影数量变化会让
+  所有材质重新编译，代价比停更大；「关闭投影」由「停止更新 + 强度 0」共同保证。
+- 质量档 `off/low/medium/high` 只改阴影分辨率、范围、偏置与雨滴数量，默认中档；
+  小屏或核心数 ≤ 4 的设备自动取低档，不提供设置界面。
+
+### 16.5 城市增量接入与资源归属
+
+- 阴影属性只在新建筑实例创建、道路重建或 GLB 异步加载成功后设置一次；
+  `CityScene.syncLayout` 的稳定 id 增量同步逻辑保持不变，读档/扩张不会整场重建。
+- 天空穹顶、星空、太阳与雨体积由 `EnvironmentRig` 独占创建与销毁，
+  `World.dispose` 先销毁环境再销毁场景；雨缓冲一次分配，密度用 `setDrawRange` 表达。
+- 雾的**基数**来自城区边界（`CityScene.fogBase`），天气只在其上做倍率；
+  城市扩张后基数自动更新，不需要重建环境对象。
+
+### 16.6 存档 v18 → v19
+
+新增 `environment` 切片，只保存 `weather` / `previousWeather` / `changedAtMinute` /
+`endsAtMinute` / `randomState`。太阳方向、天空颜色、雾距离与环境光都由时间与天气推导，
+不重复保存；不序列化任何 Three.js 对象、材质、粒子缓冲或 GPU 资源。
+旧档在迁移时刻初始化为晴天并重排下一次调度；读档与新游戏都会在首个有效画面前对齐环境。

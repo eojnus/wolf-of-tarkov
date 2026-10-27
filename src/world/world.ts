@@ -19,8 +19,10 @@ import {
   type LayoutBounds,
   type LayoutBuilding,
 } from '../features/city-layout';
+import type { ReadonlyEnvironmentState } from '../features/environment';
 import type { WorldSaveData } from '../infrastructure/storage';
 import { loadCharacterRig } from './character';
+import { EnvironmentRig } from './environment';
 import {
   EMPTY_INPUT,
   PLAYER_EDGE_MARGIN,
@@ -144,6 +146,7 @@ export class World {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly city: CityScene;
+  private readonly environment: EnvironmentRig;
   private readonly player: Player;
   private readonly container: HTMLElement;
   private readonly callbacks: WorldCallbacks;
@@ -215,6 +218,11 @@ export class World {
     const aspect = container.clientWidth / Math.max(1, container.clientHeight);
     this.camera = new THREE.PerspectiveCamera(CAMERA.fov, aspect, CAMERA.near, CAMERA.far);
 
+    // 环境（天空、太阳、雾、雨）在这里建立一次并贯穿整个 World 生命周期；
+    // 它只接受显式的环境采样，不读 GameState。
+    this.environment = new EnvironmentRig(this.city.scene, this.renderer, this.camera);
+    this.environment.setFogBase(this.city.fogBase.near, this.city.fogBase.far);
+
     const pose = this.player.pose();
     this.followTarget.set(pose.x, CAMERA.targetHeight, pose.z);
     this.placeCamera(0, true);
@@ -255,6 +263,8 @@ export class World {
     this.city.syncLayout(layout);
     this.handles = this.city.buildings;
     this.colliders = this.handles.map((handle) => handle.collider);
+    // 城区扩张后雾的基数随边界变化；天气修饰仍由环境系统叠加
+    this.environment.setFogBase(this.city.fogBase.near, this.city.fogBase.far);
 
     // 几何被替换（或新增）的建筑需要重新应用模型；保留实例的建筑继续用已有模型。
     for (const handle of this.handles) {
@@ -607,6 +617,22 @@ export class World {
 
   /* -------------------------------------------------------------- 循环 */
 
+  /**
+   * 应用一帧环境（太阳、天空、雾、雨）。
+   *
+   * `minute` 是表现用游戏分钟（权威整数分钟 + 不足一分钟的余量），`dtSeconds`
+   * 是表现用时间；暂停时由 app 层传 0，雨滴随之冻结而天气与光照保持不动。
+   * 世界不读业务状态，只接收这一份显式环境视图。
+   */
+  updateEnvironment(
+    minute: number,
+    dtSeconds: number,
+    weather: ReadonlyEnvironmentState,
+  ): void {
+    const pose = this.player.pose();
+    this.environment.update(minute, dtSeconds, weather, pose.x, pose.z);
+  }
+
   update(dtMoveSeconds: number, canMove: boolean, moveMultiplier = 1): PlayerUpdateResult {
     // 碰撞未就绪（GLB 仍在加载）时即使 app 层传允许移动也必须锁住，
     // 避免用布局 AABB 走完后模型变大把人物卡进建筑。
@@ -667,6 +693,8 @@ export class World {
   /** 摄像机位置与遮挡。dt 用真实时间，不随经济倍率变化。 */
   render(dtSeconds: number): void {
     this.placeCamera(dtSeconds, false);
+    // 相机移动之后再让天空与雨体积跟随，避免穹顶与雨幕比画面慢一帧
+    this.environment.followCamera();
     this.renderer.render(this.city.scene, this.camera);
   }
 
@@ -797,6 +825,7 @@ export class World {
     document.removeEventListener('mousemove', this.handleMouseMove);
     document.removeEventListener('pointerlockchange', this.pointerLockHandler);
     this.player.dispose();
+    this.environment.dispose();
     this.city.dispose();
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement === this.container) {

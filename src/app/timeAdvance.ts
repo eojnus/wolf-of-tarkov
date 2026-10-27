@@ -37,6 +37,7 @@ import type { AdvanceSegment } from '../core/clock';
 import { dateAtMinute, monthEndBoundaryMinute, monthIndexAtMinute } from '../core/calendar';
 import type { CalendarConfig } from '../core/calendar';
 import { TIME, type JobConfig } from '../content/config';
+import { advanceEnvironment } from '../features/environment';
 import { advanceSurvival, workEfficiencyOf } from '../features/survival';
 import { accrueWork } from '../features/employment';
 import { accrueInterest, settleDue } from '../features/loan';
@@ -300,6 +301,9 @@ export function advanceGameTime(
         accrueBusinessMinutes(draft, segment.minutes, reportingMonthKey(segment.startMinute));
         // 人口自然增长只认游戏时间：暂停与后台不推进时间，也就不增长
         advanceNaturalGrowth(draft.population, segmentEnd);
+        // 环境天气调度同样只认游戏分钟：按目标时刻直接求解，跳时不会逐帧重播历史，
+        // 也不影响任何经济结算的顺序
+        advanceEnvironment(draft.environment, segmentEnd);
 
         // b. 行情节点：跨过几个就处理几个
         result.marketTicks += advanceSecurities(draft, segmentEnd);
