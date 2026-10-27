@@ -1293,19 +1293,34 @@ S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100�
 - 政治环形图使用同一视图内 12 个互斥群体的 ratio，不混入收入/利益边际，不从显示文本反算。
   内部样本、群体画像、逻辑城区与月结明细卡片移除后，原数据、统计和月结接口继续保留。
 
-## 二十七、建筑视觉契约（独立原型，未接正式地图）
+## 二十七、建筑视觉契约（已接入正式地图）
 
-- 工厂输入为稳定建筑 id、模板版本、风格、规划宽深高、位置与朝向；唯一解析入口为
-  `resolveBuildingPlan`。视觉种子包含建筑 id、模板版本与 `BUILDING_VISUAL_RULES_VERSION`。
-- 声明空间由输入尺寸与朝向决定；全部几何含装饰与屋顶设备须在其内。
-  支持宽 8–80 m、深 8–60 m、高 6–120 m，超出范围抛 `PlanRangeError`，不静默修改规划。
+- 唯一数据流：`只读 CityLayoutView + 所属城区模板版本` → `world/buildings/layout-adapter.ts`
+  → `resolveBuildingPlan` → `BuildingVisualFactory.begin` → scene 挂载并原位写 `handle.collider`。
+  位置、尺寸、入口、id、districtId、interactionId、shopId、companyId、available 仍以 cityLayout 为权威，
+  视觉层不得写回，也不得读写 realEstate / housing / finance。
+- 工厂输入为稳定建筑 id、模板版本、风格、规划宽深高、位置、朝向与可选招牌文字；唯一尺寸解析入口为
+  `resolveBuildingPlan`。视觉种子只包含建筑 id、**所属城区已存模板版本**与
+  `BUILDING_VISUAL_RULES_VERSION`；不得用 `layout.revision` 或全城 `layoutVersion` 代替，匹配异常须明确诊断。
+- 声明空间由输入尺寸与朝向决定；全部几何含装饰、屋顶设备与招牌须在其内。
+  支持宽 8–80 m、深 8–60 m、高 5–120 m（5 m 为住房新区真实输入，按单层 + 完整女儿墙实现，
+  单层建筑不摆屋顶设备）；超出范围抛 `PlanRangeError`，不静默修改规划。
+- 朝向按入口主轴换算：+Z→0、-Z→π、+X→π/2、-X→-π/2；旋转 90° 时传给工厂的局部宽深**必须交换**，
+  使旋转后的世界包络仍等于原规划占地。声明包络写入**现有** collider 对象的六个字段，引用不变。
 - `begin()` 返回单栋句柄与 result；在途取消以 `VisualLoadCancelled` 拒绝，不取消其他楼共享加载。
-  调用方重建须取消旧句柄、检查自身代次并释放过期结果；工厂代次不替代世界布局/模型代次。
+  世界侧异步检查为「代次 + 布局 revision + handle 仍是当前实例 + 重算的视觉指纹」四项，
+  过期成功结果立即释放；过期请求的 finally 不得扣当前代次 pending 或触发新代次就绪，
+  当前代次无论成功还是明确失败都恰好结算一次。
 - 资产库按贴图 URL、模型 id / 节点名及真实材质参数共享在途与结果；失败移除在途缓存，
-  下次请求可重试，半成品材质释放。单栋 dispose 不释放共享资源；工厂 dispose 统一释放资产。
-- 禁止以正式场景 `disposeObject` 释放工厂共享产物；未来接入应显式用 visual.dispose / factory.release。
-  声明包络写入现有 collider 的方案尚未接入，不能据原型推断正式碰撞行为已经改变。
-- 不读写经济切片、产权、住房或 cityLayout，不以窗数/阳台数反推住房单元，不改变 interactionId。
-  存档仍为 v18，原迁移、成交、资金预留与住房月结逻辑保留。
-- 本轮只合入库、资产、来源清单、报告证据与开发预览页；正式游戏入口与地图保持现有实现。
-  类型检查包含原型源码，生产构建入口仍为 index.html，不产出独立原型页面。
+  下次请求可重试，半成品材质释放。单栋 dispose 只释放本楼合批几何、实例与自有招牌材质、
+  且不碰共享资源；工厂 dispose 统一释放资产。
+- 释放只有一个入口 `releaseBuildingHandle`（删除、替换、整场销毁共用）：先释放并摘除 visual，
+  再释放本楼独有的占位与标签。**禁止**把工厂产物交给正式场景的通用 `disposeObject` 遍历释放；
+  `CitySceneImpl.dispose()` 必须先逐栋释放，再遍历释放场景。`World.dispose` 顺序为
+  「标记失效并取消在途 → 释放场景楼体 → 销毁工厂共享资产 → renderer」。
+- 旧整栋 GLB 不再是成功路径：正式场景不创建 GLTFLoader，也不按模型包围盒反算碰撞；
+  `LayoutBuilding.model` / `modelScaleKey` 与 `public/assets/models/*.glb` 仅作旧存档兼容与历史资源。
+  正常成功路径不得回落到旧美术；旧程序化外观只允许在加载中或明确失败时出现。
+- 不以窗数/阳台数反推住房单元，不改变 interactionId；存档仍为 v18，原迁移、成交、资金预留
+  与住房月结逻辑保留。
+

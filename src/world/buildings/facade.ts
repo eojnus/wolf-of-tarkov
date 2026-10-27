@@ -376,6 +376,14 @@ function buildGroundFront(
   facePiece(assembly, face, materials.frame, tileMeters, 0, doorWidth - 0.1, doorTop - 0.03, 0.1, 0.22, -0.12);
 }
 
+/**
+ * 商业裙房的橱窗带（地面层）：上下沿的常量只在这里定义一次，
+ * 其他需要与橱窗对齐的构件也从这里取值，避免「招牌压住玻璃」或「招牌悬在半空」。
+ */
+function shopfrontGlazing(groundHeight: number): { readonly bottom: number; readonly top: number } {
+  return { bottom: 0.5, top: groundHeight - 0.7 };
+}
+
 /** 商业裙房：基座 + 通高橱窗 + 竖挺 + 过梁 + 主入口洞口。 */
 function buildShopfront(
   assembly: BuildingAssembly,
@@ -388,8 +396,7 @@ function buildShopfront(
   pier: number,
 ): void {
   const h = plan.groundHeight;
-  const glassBottom = 0.5;
-  const glassTop = h - 0.7;
+  const { bottom: glassBottom, top: glassTop } = shopfrontGlazing(h);
   const isFront = face.sign === 1 && face.axis === 'x';
   const entrance = plan.entrance;
   const doorWidth = isFront ? Math.min(entrance.width, face.length * 0.28) : 0;

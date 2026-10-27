@@ -49,6 +49,11 @@ export interface BuildingVisualRequest {
    * 正式接入时按既有入口方向传入，只旋转视觉对象，不改逻辑地图。
    */
   readonly rotationY?: number;
+  /**
+   * 门头招牌文字（商店的品牌辨识）。只有首层商业面（`entrance.shopfront`）会真正生成招牌；
+   * 其他设施不传即可。文字只用于表现，不参与任何业务判断。
+   */
+  readonly signLabel?: string;
 }
 
 /** 一栋建成的视觉对象。 */

@@ -18,7 +18,14 @@
 import * as THREE from 'three';
 import type { BuildingStyleId } from '../../content/building-visuals';
 import { VisualAssetLibrary, type ModelPiece } from './assets';
-import { buildBalconies, buildEntrance, buildFireEscape, buildRoof, PieceInstances } from './details';
+import {
+  buildBalconies,
+  buildBrandSign,
+  buildEntrance,
+  buildFireEscape,
+  buildRoof,
+  PieceInstances,
+} from './details';
 import { buildShell } from './facade';
 import { BuildingAssembly, disposeBuildingGroup } from './geometry';
 import { resolveBuildingPlan, type ResolvedPlan } from './plan';
@@ -154,10 +161,19 @@ export class BuildingVisualFactory {
     buildEntrance(context);
     buildRoof(context, instances);
     buildFireEscape(context, instances);
+    // 门头招牌：底板并入合批，贴面是本楼独有材质（随本楼释放）
+    const sign = buildBrandSign(context, request.signLabel ?? '');
     instances.flush(assembly);
 
     const group = assembly.build();
-    const stats: VisualRenderStats = assembly.stats();
+    const baseStats = assembly.stats();
+    const stats: VisualRenderStats = sign
+      ? {
+          drawCalls: baseStats.drawCalls + sign.drawCalls,
+          triangles: baseStats.triangles + sign.triangles,
+        }
+      : baseStats;
+    if (sign) group.add(sign.mesh);
     group.position.set(request.position.x, 0, request.position.z);
     group.rotation.y = request.rotationY ?? 0;
     group.userData.buildingId = request.buildingId;
@@ -166,6 +182,8 @@ export class BuildingVisualFactory {
     // 组装完成后再次确认：期间被取消或工厂销毁时，释放本楼独有资源并拒绝
     if (!this.isActive(token)) {
       disposeBuildingGroup(group);
+      sign?.material.dispose();
+      sign?.texture.dispose();
       throw new VisualLoadCancelled();
     }
 
@@ -180,6 +198,9 @@ export class BuildingVisualFactory {
         if (released) return;
         released = true;
         disposeBuildingGroup(group);
+        // 招牌材质/贴图是本楼独有（不在资产库里），必须随本楼释放
+        sign?.material.dispose();
+        sign?.texture.dispose();
         group.removeFromParent();
         this.live.delete(visual);
       },
@@ -236,14 +257,18 @@ export class BuildingVisualFactory {
 /**
  * 声明空间：只由规划尺寸与朝向决定（装饰已在规划阶段退让进这个范围内）。
  *
- * 旋转按 90° 整数倍精确换算；非直角朝向取旋转后矩形的最小外接 AABB（保守、稳定）。
+ * 旋转按 90° 整数倍精确换算：`cos/sin` 在极接近 0 时直接取 0，
+ * 避免 ±6e-17 的浮点尾巴让碰撞盒比规划占地大出最后一纳米；
+ * 非直角朝向取旋转后矩形的最小外接 AABB（保守、稳定）。
  */
 export function envelopeOf(request: BuildingVisualRequest): VisualBounds {
   const halfW = request.size.width / 2;
   const halfD = request.size.depth / 2;
   const rotation = request.rotationY ?? 0;
-  const cos = Math.abs(Math.cos(rotation));
-  const sin = Math.abs(Math.sin(rotation));
+  const cosRaw = Math.abs(Math.cos(rotation));
+  const sinRaw = Math.abs(Math.sin(rotation));
+  const cos = cosRaw < 1e-9 ? 0 : cosRaw;
+  const sin = sinRaw < 1e-9 ? 0 : sinRaw;
   const extentX = halfW * cos + halfD * sin;
   const extentZ = halfW * sin + halfD * cos;
   return {

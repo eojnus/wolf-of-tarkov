@@ -9,7 +9,9 @@
  *     → 解析：主体退让、层数、层高、开间、阳台与屋顶设备占位
  *     → 保证全部几何落在声明空间内（屋顶设备计入高度）
  *
- * 三种风格只是**配置样例**：同一套构件按任意合法尺寸生成，不做整体非等比拉伸。
+ * 五种风格只是**配置样例**：同一套构件按任意合法尺寸生成，不做整体非等比拉伸。
+ * 其中 `civic-4` 与 `retail-3` 是正式地图接入时新增的公共建筑/商业低楼语言，
+ * 让政府与商店不再落入住宅风格（见 `defaultStyleFor` 的显式映射）。
  *
  * 边界：
  *  - 不读 `realEstate` / `housing` / `finance` / `cityLayout`，不写任何业务状态；
@@ -17,10 +19,20 @@
  *  - 尺寸必须来自规划投影，不得为了让固定模型好看而改动逻辑地图。
  */
 
-/** 视觉规则版本：进入确定性种子，外观算法调整必须递增。 */
-export const BUILDING_VISUAL_RULES_VERSION = 1;
+/**
+ * 视觉规则版本：进入确定性种子，外观算法调整必须递增。
+ *
+ * v2：正式接入正式地图。支持 5 米真实低楼（高度下限 6 → 5）、单层建筑不再摆放屋顶设备、
+ *     朝向 90° 时局部宽深交换（世界占地不变）、新增公共建筑与商业低楼两种风格。
+ */
+export const BUILDING_VISUAL_RULES_VERSION = 2;
 
-export type BuildingStyleId = 'residential-6' | 'apartment-8' | 'office-10';
+export type BuildingStyleId =
+  | 'residential-6'
+  | 'apartment-8'
+  | 'office-10'
+  | 'civic-4'
+  | 'retail-3';
 
 /** 立面 PBR 材质键（对应 public/assets/city-realism/textures 下的真实贴图）。 */
 export type FacadeTextureKey = 'plaster-wall' | 'facade-tiles';
@@ -179,9 +191,9 @@ export interface BuildingStyle {
 }
 
 /**
- * 三种风格样例。
+ * 五种风格样例。
  *
- * 层高是真实值（住宅 3.0 / 公寓 3.05 / 办公楼 3.6，裙房 4.8）；
+ * 层高是真实值（住宅 3.0 / 公寓 3.05 / 办公楼 3.6 / 市政 3.6 / 商业 3.0，首层更高）；
  * `frontInset` 与 `backInset` 就是阳台 / 雨棚 / 台阶 / 外挂楼梯占用的空间，
  * 主体先退让，装饰才放得进声明空间。
  */
@@ -342,23 +354,148 @@ export const BUILDING_STYLES: Readonly<Record<BuildingStyleId, BuildingStyle>> =
       brightness: 1.32,
     },
   },
+  'civic-4': {
+    id: 'civic-4',
+    label: '市政公共建筑',
+    notes: '厚墙大窗洞、通高门厅与石材基座、层间线脚；不设阳台，屋顶只做女儿墙。',
+    floorHeights: { ground: 4.4, upper: 3.6 },
+    facade: {
+      preferredBayWidth: 5.0,
+      sillHeight: 1.1,
+      headHeight: 2.5,
+      pierWidth: 1.0,
+      wallThickness: 0.5,
+      glassInset: 0.18,
+      frameWidth: 0.09,
+      bandedFloors: true,
+    },
+    footprint: { frontInset: 2.6, backInset: 0.3, sideInset: 0.45 },
+    balcony: {
+      kind: 'none',
+      depth: 0,
+      parapetHeight: 0,
+      pattern: 'none',
+      firstFloor: 0,
+      alternateFloors: false,
+    },
+    entrance: {
+      width: 4.0,
+      height: 3.0,
+      canopyDepth: 2.2,
+      canopyHeight: 3.6,
+      maxSteps: 2,
+      shopfront: false,
+    },
+    roof: {
+      parapetHeight: 1.2,
+      parapetThickness: 0.42,
+      equipment: 'none',
+      equipmentHeight: 0,
+      equipmentWidth: 5,
+      equipmentDepth: 4,
+      maxUtilityBoxes: 1,
+    },
+    fireEscape: false,
+    textures: { wall: 'plaster-wall', accent: 'facade-tiles' },
+    palette: {
+      wallTint: 0xeceae3,
+      trimTint: 0xf7f5ef,
+      glassTint: 0x9db9c6,
+      frameTint: 0x3b4148,
+      accentTint: 0x9aa0a3,
+      brightness: 1.32,
+    },
+  },
+  'retail-3': {
+    id: 'retail-3',
+    label: '商业沿街楼',
+    notes: '小开间、首层通高橱窗与门头招牌带；低楼只保留一层商业面，不摆屋顶设备。',
+    floorHeights: { ground: 3.6, upper: 3.0 },
+    facade: {
+      preferredBayWidth: 4.4,
+      sillHeight: 0.6,
+      headHeight: 2.6,
+      pierWidth: 0.34,
+      wallThickness: 0.36,
+      glassInset: 0.1,
+      frameWidth: 0.07,
+      bandedFloors: true,
+    },
+    footprint: { frontInset: 1.9, backInset: 0.2, sideInset: 0.3 },
+    balcony: {
+      kind: 'none',
+      depth: 0,
+      parapetHeight: 0,
+      pattern: 'none',
+      firstFloor: 0,
+      alternateFloors: false,
+    },
+    entrance: {
+      width: 3.2,
+      height: 2.8,
+      canopyDepth: 1.6,
+      canopyHeight: 3.2,
+      maxSteps: 1,
+      shopfront: true,
+    },
+    roof: {
+      parapetHeight: 0.9,
+      parapetThickness: 0.3,
+      equipment: 'none',
+      equipmentHeight: 0,
+      equipmentWidth: 3.2,
+      equipmentDepth: 3.2,
+      maxUtilityBoxes: 2,
+    },
+    fireEscape: false,
+    textures: { wall: 'plaster-wall', accent: 'facade-tiles' },
+    palette: {
+      // accentTint 就是门头招牌底色（深青）：与旧招牌保持同一品牌观感
+      wallTint: 0xece7dc,
+      trimTint: 0xf7f3ea,
+      glassTint: 0x9fc0c8,
+      frameTint: 0x263039,
+      accentTint: 0x0e4f55,
+      brightness: 1.34,
+    },
+  },
 };
 
-export const STYLE_IDS: readonly BuildingStyleId[] = ['residential-6', 'apartment-8', 'office-10'];
+export const STYLE_IDS: readonly BuildingStyleId[] = [
+  'residential-6',
+  'apartment-8',
+  'office-10',
+  'civic-4',
+  'retail-3',
+];
 
 export function styleSpec(id: BuildingStyleId): BuildingStyle {
   return BUILDING_STYLES[id];
 }
 
 /**
- * 正式接入时的默认风格映射（本分支只用于预览页）。
+ * 设施语义类型 → 视觉风格的**显式**映射（正式地图与预览页共用）。
  *
- * 只按 `kind` 与规划高度挑选**风格**，不代表尺寸：宽深高完全来自只读布局。
+ * 只按 `kind` 与规划高度挑选**风格**，不决定尺寸：宽深高完全来自只读布局。
+ * 六类既有设施与三个新区的全部 kind 都必须在这里有明确分支；
+ * 政府与商店走公共建筑 / 商业低楼语言，不再落回住宅默认分支。
+ * 未知 kind 用办公楼语言兜底（非住宅），并应在调用处记录诊断。
  */
 export function defaultStyleFor(kind: string, height: number): BuildingStyleId {
-  if (kind === 'home') return height >= 20 ? 'apartment-8' : 'residential-6';
-  if (kind === 'office' || kind === 'securities' || kind === 'bank') return 'office-10';
-  return 'residential-6';
+  switch (kind) {
+    case 'home':
+      return height >= 20 ? 'apartment-8' : 'residential-6';
+    case 'bank':
+    case 'office':
+    case 'securities':
+      return 'office-10';
+    case 'government':
+      return 'civic-4';
+    case 'shop':
+      return 'retail-3';
+    default:
+      return 'office-10';
+  }
 }
 
 /* ------------------------------------------------------------------ 种子 */

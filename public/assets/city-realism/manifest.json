@@ -1,6 +1,6 @@
 {
   "schema": "wolf-city-building-visuals/1",
-  "generatedFor": "feature/city-modular-buildings 原型阶段",
+  "generatedFor": "feature/city-building-integration 正式地图接入（模块化建筑为唯一建筑外观路径）",
   "license": {
     "spdx": "CC0-1.0",
     "deed": "https://creativecommons.org/publicdomain/zero/1.0/",
@@ -44,7 +44,7 @@
         "裁剪后重新打包为单文件 GLB（geometry + 内嵌 jpg），运行时一次请求",
         "运行时按节点局部坐标烘焙几何，三栋楼共享同一份几何，仅各自持有实例矩阵"
       ],
-      "usage": "住宅阳台金属栏杆（10 处实例）、办公楼背面外挂疏散楼梯的平台栏杆/楼梯/爬梯"
+      "usage": "住宅/公寓阳台金属栏杆；办公楼、银行与证券中心背面的外挂疏散楼梯（平台栏杆 / 楼梯 / 爬梯）"
     },
     {
       "id": "utility_box_01",
@@ -70,7 +70,7 @@
         "材质改用建筑自身的金属框架材质，避免为一个 1.12 米高的箱体额外占用 3 张贴图显存",
         "重新打包为单文件 GLB，体积 0.14 MB"
       ],
-      "usage": "屋顶室外机（每栋 0～4 个实例）、办公楼入口侧贴墙设备箱",
+      "usage": "屋顶室外机（≥2 层的楼，含新区）与办公楼入口侧贴墙设备箱",
       "honestNote": "本项只使用了该资产的几何，未使用其贴图材质；不把它算作 PBR 材质来源。"
     },
     {
@@ -103,7 +103,7 @@
         "ARM 打包图同时作为 roughnessMap（G 通道）与 metalnessMap（B 通道），省掉两张独立贴图"
       ],
       "tileMeters": 3.2,
-      "usage": "住宅与公寓的主体墙面、女儿墙、屋顶；办公楼的裙房基座与雨棚"
+      "usage": "五种风格（板式住宅/点式公寓/办公楼/市政/商业）的主墙面、女儿墙、屋顶与雨棚"
     },
     {
       "id": "rectangular_facade_tiles",
@@ -135,7 +135,7 @@
         "同一张 ARM 同时驱动粗糙度与金属度"
       ],
       "tileMeters": 3.0,
-      "usage": "办公楼标准层外墙肋纹板材；公寓的深色石材基座与雨棚"
+      "usage": "办公/银行/证券标准层外墙肋纹板材；市政与商业风格的基座与层间线脚"
     }
   ],
   "totals": {

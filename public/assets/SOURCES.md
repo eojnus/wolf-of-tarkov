@@ -13,8 +13,11 @@ Quaternius 角色模型；界面图标自 v0.3.4 起使用 Lucide。每一类资
   - 本地留存：`LICENSE-kenney-city-kit.txt`
 - 核查结论：许可明确允许个人、教育与商业用途，允许修改、用于游戏并随构建产物分发；
   署名非强制要求（仍在此致谢）。用于本项目不存在授权疑问。
-- 使用方式：仅取用其中 6 个 GLB 建筑模型，作为 5 栋功能建筑的视觉表现，
-  在 `src/world/scene.ts#applyBuildingModel` 中做尺寸归一化后替换灰盒。
+- 使用方式（历史）：仅取用其中 6 个 GLB 建筑模型，作为 5 栋功能建筑的整栋视觉，
+  由已移除的 `applyBuildingModel` 做尺寸归一化后替换灰盒。
+  **自建筑视觉接入正式地图后，正式场景不再加载这些整栋 GLB**：外观改由
+  `src/world/buildings/` 的模块化工厂按只读规划尺寸生成。文件与来源记录保留，
+  旧存档的 `model` / `modelScaleKey` 字段也保留为兼容数据。
   模型仅为表现层，业务规则不依赖模型文件或节点名称。
 
 ### 实际纳入的文件
@@ -127,10 +130,10 @@ You can use our assets for any purpose … You can redistribute them"。
 
 | 资源 | 类型 | 作者 | 本地文件 | 用途 |
 | --- | --- | --- | --- | --- |
-| Modular Fire Escape（`modular_fire_escape`） | 3D 模型 | Juniix | `city-realism/models/fire-escape-modular.glb` | 住宅阳台金属栏杆；办公楼背面外挂疏散楼梯（平台栏杆 / 楼梯 / 爬梯） |
-| Utility Box 01（`utility_box_01`） | 3D 模型（仅几何） | James Ray Cock | `city-realism/models/utility-box.glb` | 屋顶室外机与入口侧设备箱 |
-| Plastered Wall（`plastered_wall`） | PBR 材质 | Amal Kumar | `city-realism/textures/plaster-wall-*.jpg` | 住宅/公寓主墙面、女儿墙、裙房基座 |
-| Rectangular Facade Tiles（`rectangular_facade_tiles`） | PBR 材质 | Charlotte Baglioni | `city-realism/textures/facade-tiles-*.jpg` | 办公楼标准层外墙板材、公寓深色基座 |
+| Modular Fire Escape（`modular_fire_escape`） | 3D 模型 | Juniix | `city-realism/models/fire-escape-modular.glb` | 住宅/公寓阳台金属栏杆；办公楼、银行、证券中心背面外挂疏散楼梯（平台栏杆 / 楼梯 / 爬梯） |
+| Utility Box 01（`utility_box_01`） | 3D 模型（仅几何） | James Ray Cock | `city-realism/models/utility-box.glb` | 屋顶室外机（≥2 层的楼）与入口侧设备箱 |
+| Plastered Wall（`plastered_wall`） | PBR 材质 | Amal Kumar | `city-realism/textures/plaster-wall-*.jpg` | 五种风格的主墙面、女儿墙、屋顶、雨棚与市政/商业基座 |
+| Rectangular Facade Tiles（`rectangular_facade_tiles`） | PBR 材质 | Charlotte Baglioni | `city-realism/textures/facade-tiles-*.jpg` | 办公/银行/证券标准层外墙板材；市政与商业风格的基座与层间线脚 |
 
 资源页与下载地址：
 
@@ -158,7 +161,10 @@ You can use our assets for any purpose … You can redistribute them"。
 
 ## 替换资源时的注意事项
 
-1. 把新的 `.glb` 放进 `public/assets/models/`。
-2. 修改 `src/content/config.ts` 中对应建筑的 `model` 字段（相对 `public` 的路径）。
-3. 无需改动任何业务规则；加载失败会自动回退到灰盒表现。
+1. 整栋建筑外观不再由 `config.ts` 的 `model` 字段决定：正式场景一律走
+   `src/world/buildings/` 的模块化工厂，替换建筑美术应改 `src/content/building-visuals.ts`
+   的风格与素材登记（必要时新增 `public/assets/city-realism/` 下的文件并同步 manifest）。
+2. `public/assets/models/*.glb` 保留为历史资源与旧存档兼容数据，不再参与正式渲染。
+3. 人物模型仍在 `config.ts` 的 `PLAYER.model.url`，替换后需更新 `scene-scale` 里的人物身高参照说明。
+4. 新资源必须登记来源、作者、许可证与署名要求；无清晰许可的素材不得入库。
 4. 若新资源许可要求署名，请补充到本文件与游戏内的说明处。
