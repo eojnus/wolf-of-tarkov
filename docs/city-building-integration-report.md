@@ -1,7 +1,8 @@
 # 正式地图建筑美术接入 · 交付报告
 
 分支 `feature/city-building-integration` · 工作目录 `C:\Coding\wolf-city-integration`
-基线 `7e07d29`（本地 main，含房地产 v18、UI 菜单重组、建筑原型）→ 任务书提交 `dc61c09` → 本次实现提交见文末。
+基线 `7e07d29`（本地 main，含房地产 v18、UI 菜单重组、建筑原型）→ 任务书提交 `dc61c09`
+→ 本次实现提交 `7dd1be8`（未 push、未合并、未动 main）。
 
 **结论：正式地图（基础六类 + 三个新区）全部走模块化楼体；旧整栋 GLB 退出成功路径；
 房地产 v18、存档格式、业务公共接口与 UI 均未改动。**
@@ -266,7 +267,14 @@ CityLayoutView（只读）+ 所属城区 templateVersion
 | `docs/city-buildings-shots/09-integration-base-city.png` | 生产构建 + 正常游戏入口：晴川公寓（板式住宅、金属栏杆阳台）与市政厅（市政风格）为新楼体，标签正常 |
 | `docs/city-buildings-shots/10-integration-expansion-lowrise.png` | 夹具经正式 `World.syncLayout`：住房新区 5 m 社区服务用房（单层、无屋顶设备）+ 14 m 住宅 + 科技新区办公楼风格（含 −90° 朝向的科创服务中心） |
 
-## 10. 复现
+## 10. 提交
+
+- 分支 `feature/city-building-integration`，提交 `7dd1be8`（父提交 `dc61c09`）。
+- 提交内容：第 1 节列出的源码/文档/资源说明与两张截图；`node_modules`、`dist`、一次性夹具脚本、
+  临时服务与下载中间文件均未提交（`.gitignore` 覆盖前两者，夹具文件已删除）。
+- 未做：push、合并到 main、改动其他工作树。
+
+## 11. 复现
 
 ```bash
 cd C:/Coding/wolf-city-integration
