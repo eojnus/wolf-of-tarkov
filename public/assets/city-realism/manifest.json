@@ -1,0 +1,148 @@
+{
+  "schema": "wolf-city-building-visuals/1",
+  "generatedFor": "feature/city-modular-buildings 原型阶段",
+  "license": {
+    "spdx": "CC0-1.0",
+    "deed": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "sourcePolicy": "https://polyhaven.com/license",
+    "note": "Poly Haven 全部模型与贴图均为 CC0，可商用、可再分发、署名非强制。"
+  },
+  "assets": [
+    {
+      "id": "modular_fire_escape",
+      "kind": "model",
+      "page": "https://polyhaven.com/a/modular_fire_escape",
+      "name": "Modular Fire Escape",
+      "author": "Juniix",
+      "license": "CC0-1.0",
+      "downloadUrl": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/modular_fire_escape/modular_fire_escape_1k.gltf",
+      "downloadedFormat": "glTF 2.0（1k 贴图包：gltf + bin + 6 张 jpg）",
+      "localPath": "public/assets/city-realism/models/fire-escape-modular.glb",
+      "bytes": 2511120,
+      "originalBytes": 4811000,
+      "originalNote": "原始 1k 包 = bin 515356 B + 6 张贴图 4277098 B + gltf 13672 B，实测约 4.81 MB",
+      "triangles": 8086,
+      "originalTriangles": 11322,
+      "nodesKept": [
+        "modular_fire_escape_railing_middle",
+        "modular_fire_escape_platform_railing",
+        "modular_fire_escape_stairs",
+        "modular_fire_escape_ladder_bottom"
+      ],
+      "textures": {
+        "count": 3,
+        "resolution": "1024x1024",
+        "channels": [
+          "diffuse(jpg)",
+          "normal GL(jpg)",
+          "ARM(jpg)"
+        ]
+      },
+      "optimization": [
+        "只保留实际使用的 4 个构件节点（7 → 4），删除 platform_middle / platform_bottom / railing_bottom",
+        "只保留构件真正使用的 01 号 PBR 套（6 张 → 3 张），02 号套材质与节点一并移除",
+        "裁剪后重新打包为单文件 GLB（geometry + 内嵌 jpg），运行时一次请求",
+        "运行时按节点局部坐标烘焙几何，三栋楼共享同一份几何，仅各自持有实例矩阵"
+      ],
+      "usage": "住宅阳台金属栏杆（10 处实例）、办公楼背面外挂疏散楼梯的平台栏杆/楼梯/爬梯"
+    },
+    {
+      "id": "utility_box_01",
+      "kind": "model",
+      "page": "https://polyhaven.com/a/utility_box_01",
+      "name": "Utility Box 01",
+      "author": "James Ray Cock",
+      "license": "CC0-1.0",
+      "downloadUrl": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/utility_box_01/utility_box_01_1k.gltf",
+      "downloadedFormat": "glTF 2.0（1k 贴图包：gltf + bin + 3 张 jpg）",
+      "localPath": "public/assets/city-realism/models/utility-box.glb",
+      "bytes": 143828,
+      "originalBytes": 1971743,
+      "originalNote": "原始 1k 包 = bin 142552 B + 3 张贴图 1831743 B，实测约 1.97 MB",
+      "triangles": 4404,
+      "textures": {
+        "count": 0,
+        "resolution": "未随包携带（几何保留，材质由项目统一提供）",
+        "channels": []
+      },
+      "optimization": [
+        "剥离资产自带的 3 张 1K 贴图，只保留几何与节点结构（模型 → 几何来源）",
+        "材质改用建筑自身的金属框架材质，避免为一个 1.12 米高的箱体额外占用 3 张贴图显存",
+        "重新打包为单文件 GLB，体积 0.14 MB"
+      ],
+      "usage": "屋顶室外机（每栋 0～4 个实例）、办公楼入口侧贴墙设备箱",
+      "honestNote": "本项只使用了该资产的几何，未使用其贴图材质；不把它算作 PBR 材质来源。"
+    },
+    {
+      "id": "plastered_wall",
+      "kind": "texture",
+      "page": "https://polyhaven.com/a/plastered_wall",
+      "name": "Plastered Wall",
+      "author": "Amal Kumar",
+      "license": "CC0-1.0",
+      "downloadUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/plastered_wall/plastered_wall_diff_1k.jpg",
+      "downloadedFormat": "JPEG 1K（diffuse / nor_gl / arm 三张）",
+      "localPath": [
+        "public/assets/city-realism/textures/plaster-wall-diffuse-1k.jpg",
+        "public/assets/city-realism/textures/plaster-wall-normal-1k.jpg",
+        "public/assets/city-realism/textures/plaster-wall-arm-1k.jpg"
+      ],
+      "bytes": 2313364,
+      "originalBytes": 2313364,
+      "textures": {
+        "count": 3,
+        "resolution": "1024x1024",
+        "channels": [
+          "diffuse(jpg)",
+          "normal GL(jpg)",
+          "ARM(jpg)"
+        ]
+      },
+      "optimization": [
+        "直接使用 Poly Haven 1K JPEG 原图，未重采样、未二次压缩",
+        "ARM 打包图同时作为 roughnessMap（G 通道）与 metalnessMap（B 通道），省掉两张独立贴图"
+      ],
+      "tileMeters": 3.2,
+      "usage": "住宅与公寓的主体墙面、女儿墙、屋顶；办公楼的裙房基座与雨棚"
+    },
+    {
+      "id": "rectangular_facade_tiles",
+      "kind": "texture",
+      "page": "https://polyhaven.com/a/rectangular_facade_tiles",
+      "name": "Rectangular Facade Tiles",
+      "author": "Charlotte Baglioni",
+      "license": "CC0-1.0",
+      "downloadUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rectangular_facade_tiles/rectangular_facade_tiles_diff_1k.jpg",
+      "downloadedFormat": "JPEG 1K（diffuse / nor_gl / arm 三张）",
+      "localPath": [
+        "public/assets/city-realism/textures/facade-tiles-diffuse-1k.jpg",
+        "public/assets/city-realism/textures/facade-tiles-normal-1k.jpg",
+        "public/assets/city-realism/textures/facade-tiles-arm-1k.jpg"
+      ],
+      "bytes": 1838011,
+      "originalBytes": 1838011,
+      "textures": {
+        "count": 3,
+        "resolution": "1024x1024",
+        "channels": [
+          "diffuse(jpg)",
+          "normal GL(jpg)",
+          "ARM(jpg)"
+        ]
+      },
+      "optimization": [
+        "直接使用 Poly Haven 1K JPEG 原图，未重采样、未二次压缩",
+        "同一张 ARM 同时驱动粗糙度与金属度"
+      ],
+      "tileMeters": 3.0,
+      "usage": "办公楼标准层外墙肋纹板材；公寓的深色石材基座与雨棚"
+    }
+  ],
+  "totals": {
+    "files": 8,
+    "bytes": 6806323,
+    "mebibytes": 6.49,
+    "composition": "2 个 GLB 模型 + 6 张 1K JPEG 贴图",
+    "diskNote": "生产静态资源合计 6.49 MiB（预算 15 MiB；未计入本清单自身约 9 KB）"
+  }
+}
