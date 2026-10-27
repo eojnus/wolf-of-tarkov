@@ -448,3 +448,102 @@ export function buildFireEscape(context: DetailContext, instances: PieceInstance
     });
   }
 }
+
+/* ------------------------------------------------------------ 门头招牌 */
+
+/**
+ * 招牌产物的归属：底板走共享材质合批，`mesh` 的材质与贴图是本楼独有，
+ * 由工厂在 `visual.dispose()` 时一并释放（不进资产库，避免与别栋混用）。
+ */
+export interface BrandSign {
+  readonly mesh: THREE.Mesh;
+  readonly material: THREE.MeshStandardMaterial;
+  readonly texture: THREE.Texture;
+  readonly drawCalls: number;
+  readonly triangles: number;
+}
+
+/** 招牌画布：深青底 + 白字，宽高比与招牌板一致，文字不被拉伸。 */
+function makeBrandSignTexture(
+  label: string,
+  widthMeters: number,
+  heightMeters: number,
+): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = Math.max(64, Math.round((canvas.width * heightMeters) / Math.max(0.1, widthMeters)));
+  const ctx = canvas.getContext('2d');
+  const h = canvas.height;
+
+  if (ctx) {
+    ctx.fillStyle = '#0e4f55';
+    ctx.fillRect(0, 0, canvas.width, h);
+    ctx.fillStyle = 'rgba(126, 224, 224, 0.16)';
+    ctx.fillRect(0, 0, canvas.width, Math.max(4, h * 0.08));
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+    const lip = Math.max(3, h * 0.07);
+    ctx.fillRect(0, h - lip, canvas.width, lip);
+
+    // 右侧两道装饰竖条：保留旧招牌的品牌观感，不带任何业务文字
+    ctx.fillStyle = 'rgba(126, 224, 224, 0.5)';
+    ctx.fillRect(canvas.width - 46, h * 0.2, 7, h * 0.6);
+    ctx.fillRect(canvas.width - 28, h * 0.2, 7, h * 0.6);
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `700 ${Math.round(h * 0.62)}px "Microsoft YaHei", "PingFang SC", system-ui, sans-serif`;
+    ctx.fillText(label, 40, h / 2 + 1);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  return texture;
+}
+
+/**
+ * 门头招牌：只有首层商业面才生成。
+ *
+ * 位置取「雨棚上沿 → 首层窗台线」之间的实体墙带：招牌在雨棚之上、二层窗之下，
+ * 既不会被雨棚挡住，也不会压住橱窗玻璃；这条带太薄时直接不生成，
+ * 由楼顶标签继续承担辨识。底板挑出 0.14 米，仍在 `frontInset` 以内，不扩大声明包络。
+ */
+export function buildBrandSign(context: DetailContext, label: string): BrandSign | null {
+  const { assembly, plan, materials, tileMeters } = context;
+  const text = label.trim();
+  if (text === '' || !plan.entrance.shopfront) return null;
+
+  const canopyTop = plan.entrance.canopyHeight + 0.15;
+  const bandBottom = Math.max(plan.groundHeight + 0.06, canopyTop + 0.06);
+  const bandTop = plan.groundHeight + plan.facade.sillHeight - 0.06;
+  const signHeight = Math.min(0.62, bandTop - bandBottom);
+  if (signHeight < 0.3) return null;
+  const signWidth = Math.min(plan.body.width - 1.2, 9.5);
+  if (signWidth < 2) return null;
+
+  const centerY = (bandBottom + bandTop) / 2;
+  const frontZ = plan.body.frontZ;
+
+  assembly.box(
+    materials.frame,
+    [signWidth + 0.16, signHeight + 0.14, 0.14],
+    [0, centerY, frontZ + 0.07],
+    tileMeters,
+  );
+
+  const texture = makeBrandSignTexture(text, signWidth, signHeight);
+  const material = new THREE.MeshStandardMaterial({
+    map: texture,
+    emissiveMap: texture,
+    emissive: new THREE.Color(0xffffff),
+    emissiveIntensity: 0.45,
+    roughness: 0.5,
+    metalness: 0.05,
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(signWidth, signHeight), material);
+  mesh.position.set(0, centerY, frontZ + 0.145);
+  mesh.receiveShadow = true;
+
+  return { mesh, material, texture, drawCalls: 1, triangles: 2 };
+}

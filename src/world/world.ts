@@ -1,17 +1,18 @@
 /**
- * 世界编排 —— 第三人称摄像机、鼠标锁定、移动输入、入口交互、人物与建筑模型加载。
+ * 世界编排 —— 第三人称摄像机、鼠标锁定、移动输入、入口交互、人物与建筑视觉调度。
  *
  * 职责边界：
  *  - 世界只读取**逻辑地图（features/city-layout 的只读视图）**与玩家位置，不读写经济状态；
  *  - 人物移动边界、读档位置修正、地面渲染全部使用同一份动态 `bounds`，
  *    不再使用固定 `CITY.groundSize / 2`；
- *  - 布局按稳定 id 增量同步，不销毁重建整个 World；模型加载用 `modelGeneration`
- *    + `layoutRevision` 双检查，旧读档的异步回调不会写回新布局；
+ *  - 布局按稳定 id 增量同步，不销毁重建整个 World；建筑视觉请求用 `visualGeneration`
+ *    + `layoutRevision` + handle 实例 + 视觉指纹四重检查，旧读档的异步回调不会写回新布局；
+ *  - 只有**一个** `BuildingVisualFactory`（全城共享贴图/材质/外部构件），World 负责请求、
+ *    取消与就绪计数；scene 负责 handle、标签、挂载、碰撞写入与单栋释放；
  *  - 摄像机与移动都用「按时间指数趋近」做平滑，手感不依赖帧率。
  */
 
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { CAMERA, CITY, PLAYER } from '../content/config';
 import {
   createBaseLayout,
@@ -20,6 +21,15 @@ import {
   type LayoutBuilding,
 } from '../features/city-layout';
 import type { WorldSaveData } from '../infrastructure/storage';
+import {
+  BuildingVisualFactory,
+  VisualLoadCancelled,
+  projectBuildingVisualRequest,
+  visualFingerprint,
+  type BuildingVisualFactoryStats,
+  type BuildingVisualHandle,
+  type BuildingVisualRequest,
+} from './buildings';
 import { loadCharacterRig } from './character';
 import {
   EMPTY_INPUT,
@@ -31,9 +41,9 @@ import {
   type PlayerUpdateResult,
 } from './player';
 import {
-  applyBuildingModel,
+  attachBuildingVisual,
   buildCityScene,
-  disposeObject,
+  detachBuildingVisual,
   type BuildingHandle,
   type CityScene,
   type Collider,
@@ -91,12 +101,22 @@ function rayBoxDistance(
   return tMin > 0.05 ? tMin : null;
 }
 
-/** 布局结构指纹：用于判断是否需要真正同步（存档 revision 可在不同存档间重复）。 */
+/**
+ * 布局结构指纹：用于判断是否需要真正同步（存档 revision 可在不同存档间重复）。
+ *
+ * 除了几何与业务绑定，这里**必须**包含「建筑所属城区」与「该城区的已存模板版本」：
+ * 它们是楼体外观的种子输入，若只靠内层 `visualFingerprint` 判断，一份几何与 revision
+ * 都相同、只有城区模板版本不同的布局会在提前返回处被丢掉，导致继续显示旧种子的楼体。
+ */
 function layoutFingerprint(layout: CityLayoutView): string {
+  const districts = layout.districts
+    .map((district) => [district.id, district.templateVersion].join(','))
+    .join('|');
   const buildings = layout.buildings
     .map((building) =>
       [
         building.id,
+        building.districtId,
         building.position.x,
         building.position.z,
         building.size.width,
@@ -129,6 +149,7 @@ function layoutFingerprint(layout: CityLayoutView): string {
     layout.bounds.maxX,
     layout.bounds.minZ,
     layout.bounds.maxZ,
+    districts,
     buildings,
     roads,
   ].join('#');
@@ -136,8 +157,28 @@ function layoutFingerprint(layout: CityLayoutView): string {
 
 export interface WorldCallbacks {
   onPointerLockChange?(locked: boolean): void;
-  /** 碰撞就绪状态变化（模型加载完成/明确回退）时通知；供 app 层刷新遮罩与交互提示。 */
+  /** 碰撞就绪状态变化（楼体挂载完成/明确降级）时通知；供 app 层刷新遮罩与交互提示。 */
   onCollisionReadyChange?(ready: boolean): void;
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** 只读诊断：正式场景里当前有多少栋楼真的用上了模块化楼体。 */
+export interface WorldVisualReport {
+  readonly ready: number;
+  readonly pending: number;
+  readonly placeholder: readonly string[];
+  readonly failures: readonly string[];
+  readonly assets: BuildingVisualFactoryStats;
+}
+
+/** 城区 id → 已存模板版本。用于视觉种子，绝不以全城 layoutVersion 或 revision 代替。 */
+function districtVersionsOf(layout: CityLayoutView): ReadonlyMap<string, number> {
+  const versions = new Map<string, number>();
+  for (const district of layout.districts) versions.set(district.id, district.templateVersion);
+  return versions;
 }
 
 export class World {
@@ -151,7 +192,8 @@ export class World {
   private readonly input: MoveInput = { ...EMPTY_INPUT };
   private readonly resizeHandler = () => this.resize();
   private readonly pointerLockHandler = () => this.handlePointerLockChange();
-  private readonly modelLoader = new GLTFLoader();
+  /** 全城唯一的建筑视觉工厂：贴图、材质与外部构件在全城共享，不每栋新建。 */
+  private readonly visualFactory = new BuildingVisualFactory();
   /** 就绪监听：碰撞由未就绪变为就绪时通知；可重复订阅/退订。 */
   private readonly readyListeners = new Set<() => void>();
 
@@ -163,15 +205,19 @@ export class World {
   /** 人物移动、位置修正、地面渲染共用的动态边界。 */
   private bounds: LayoutBounds;
   private layoutRevision = 0;
+  /** 当前布局各城区的已存模板版本（视觉种子输入）。 */
+  private districtVersions: ReadonlyMap<string, number>;
   /**
-   * 模型代次：每次布局同步 +1。异步加载回调必须同时核对「代次 + 布局 revision +
-   * 建筑实例仍在当前布局中」才允许写回碰撞/替换外观，旧 Promise 不得覆盖新布局。
+   * 视觉代次：每次开始一轮楼体请求时 +1。异步回调必须同时核对「代次 + 布局 revision +
+   * handle 仍是当前实例 + 视觉指纹」才允许挂载，旧 Promise 不得覆盖新布局。
    */
-  private modelGeneration = 0;
-  private pendingModelLoads = 0;
+  private visualGeneration = 0;
+  private pendingVisualLoads = 0;
+  /** 在途请求（建筑 id → 句柄），只存在内存；用于布局同步与销毁时取消上一轮。 */
+  private readonly visualRequests = new Map<string, BuildingVisualHandle>();
+  /** 明确降级为占位外观的建筑诊断（只增不减，仅存在于内存）。 */
+  private readonly visualFallbacks: string[] = [];
   private collisionReady = true;
-  /** 已成功应用模型的建筑 id；几何被替换时会移除并重新加载。 */
-  private readonly loadedModelIds = new Set<string>();
   /** 读档时等待碰撞就绪后再做「仅非法时」最小推出的原始 pose。 */
   private pendingRestorePose: PlayerPose | null = null;
 
@@ -206,7 +252,8 @@ export class World {
     this.layoutFingerprintValue = layoutFingerprint(initialLayout);
     this.layoutRevision = initialLayout.revision;
     this.bounds = { ...initialLayout.bounds };
-    this.city = buildCityScene(initialLayout);
+    this.districtVersions = districtVersionsOf(initialLayout);
+    this.city = buildCityScene(initialLayout, this.visualFactory);
     this.handles = this.city.buildings;
     this.colliders = this.handles.map((handle) => handle.collider);
     this.player = new Player();
@@ -229,7 +276,7 @@ export class World {
     document.addEventListener('pointerlockchange', this.pointerLockHandler);
     this.resize();
 
-    this.beginModelLoading();
+    this.beginVisualLoading();
     void this.loadCharacter();
   }
 
@@ -240,54 +287,76 @@ export class World {
    *
    * app 层约定：构造后、新游戏、读档后、以及检测到 `cityLayout.revision` 变化时调用。
    * 内部再做结构指纹比较，因此重复调用与「不同存档 revision 恰好相同」都不会丢更新。
+   *
+   * 顺序固定：先取消上一轮在途请求 → 再改变场景实例 → 最后按新布局重新请求。
+   * 已完成且视觉指纹不变的楼体原样保留，不因新增一栋楼而重建整城。
    */
   syncLayout(layout: CityLayoutView): void {
     const fingerprint = layoutFingerprint(layout);
     if (fingerprint === this.layoutFingerprintValue) return;
 
-    const previousHandles = new Map<string, BuildingHandle>();
-    for (const handle of this.handles) previousHandles.set(handle.building.id, handle);
+    // 场景实例即将变化：上一轮未完成的请求其结果一律不许再挂载
+    this.cancelVisualRequests();
 
     this.layoutFingerprintValue = fingerprint;
     this.layoutRevision = layout.revision;
     this.bounds = { ...layout.bounds };
+    this.districtVersions = districtVersionsOf(layout);
 
     this.city.syncLayout(layout);
     this.handles = this.city.buildings;
     this.colliders = this.handles.map((handle) => handle.collider);
 
-    // 几何被替换（或新增）的建筑需要重新应用模型；保留实例的建筑继续用已有模型。
-    for (const handle of this.handles) {
-      const before = previousHandles.get(handle.building.id);
-      if (before !== handle) this.loadedModelIds.delete(handle.building.id);
-    }
-
-    this.beginModelLoading();
+    this.beginVisualLoading();
     this.refreshNearbyBuilding();
     this.placeCamera(0, true);
   }
 
-  /* ---------------------------------------------------------- 模型加载 */
+  /* ---------------------------------------------------------- 楼体调度 */
 
   /**
-   * 为当前布局中「有 model 且尚未成功应用」的建筑启动 GLB 加载。
+   * 为当前布局里「还没有楼体、或视觉指纹已变」的建筑启动模块化请求。
    *
-   * 每次调用都开启新代次：旧代次的加载结果即使稍后返回也会被丢弃并释放，
-   * 因此「读档 A → 立刻读档 B」时，A 的模型不会覆盖 B 的碰撞体或外观。
-   * 加载失败保留布局配置 AABB（明确回退碰撞），同样视为已就绪。
+   * 每次调用都开启新代次：旧代次的结果即使稍后返回也会被丢弃并释放，
+   * 因此「读档 A → 立刻读档 B」时，A 的楼体不会覆盖 B 的碰撞体或外观。
+   * 已完成且指纹不变的楼体不会被重新请求。
+   * 明确失败（尺寸越界等）保留占位外观，同样视为已结算，不会卡住碰撞就绪。
    */
-  private beginModelLoading(): void {
-    const generation = ++this.modelGeneration;
-    const targets: BuildingHandle[] = [];
+  private beginVisualLoading(): void {
+    const generation = ++this.visualGeneration;
+    const targets: Array<{ handle: BuildingHandle; request: BuildingVisualRequest; key: string }> = [];
+
     for (const handle of this.handles) {
-      if (handle.building.model === null) continue;
-      if (this.loadedModelIds.has(handle.building.id)) continue;
-      targets.push(handle);
+      const templateVersion = this.districtVersions.get(handle.building.districtId);
+      if (templateVersion === undefined) {
+        // 种子必须来自所属城区的已存模板版本；匹配失败时明确诊断，绝不随机补种子
+        this.keepPlaceholder(
+          handle,
+          `找不到所属城区的模板版本（districtId=${handle.building.districtId}）`,
+        );
+        continue;
+      }
+      const request = projectBuildingVisualRequest(handle.building, templateVersion);
+      const key = visualFingerprint(request);
+      // 已完成且指纹不变：原样保留，不重新加载
+      if (handle.visual && handle.visualKey === key) continue;
+      if (handle.visual) {
+        // 指纹变了（几何/朝向/风格/招牌文字变化）：先摘下旧楼体，回到占位直到新楼体就绪
+        detachBuildingVisual(handle, this.visualFactory);
+      }
+      targets.push({ handle, request, key });
     }
-    this.pendingModelLoads = targets.length;
+
+    this.pendingVisualLoads = targets.length;
     this.collisionReady = targets.length === 0;
-    for (const handle of targets) {
-      void this.loadBuildingModel(handle, generation, this.layoutRevision);
+    for (const target of targets) {
+      void this.loadBuildingVisual(
+        target.handle,
+        target.request,
+        target.key,
+        generation,
+        this.layoutRevision,
+      );
     }
     if (this.collisionReady) this.markCollisionReady();
     else this.notifyCollisionReadyChange(false);
@@ -302,46 +371,116 @@ export class World {
     });
   }
 
-  private async loadBuildingModel(
+  /**
+   * 请求并挂载一栋楼的模块化楼体。
+   *
+   * 异步返回后必须同时通过四项检查才允许挂载：World 代次、布局 revision、
+   * handle 仍是当前布局里的同一个实例、以及重算的视觉指纹与请求一致。
+   * 工厂内部的令牌/代次是**它自己那一层**，不能替代这里的世界检查。
+   */
+  private async loadBuildingVisual(
     handle: BuildingHandle,
+    request: BuildingVisualRequest,
+    key: string,
     generation: number,
     layoutRevision: number,
   ): Promise<void> {
-    const url = handle.building.model;
-    if (!url) return;
+    let token: BuildingVisualHandle;
     try {
-      const gltf = await this.modelLoader.loadAsync(url);
-      if (this.disposed) {
-        disposeObject(gltf.scene);
+      token = this.visualFactory.begin(request);
+    } catch (error) {
+      this.keepPlaceholder(handle, describeError(error));
+      this.settleVisualLoad(generation);
+      return;
+    }
+    this.visualRequests.set(handle.building.id, token);
+
+    try {
+      const visual = await token.result;
+      if (this.isStaleVisual(handle, token, key, generation, layoutRevision)) {
+        // 过期成功结果必须释放，不能挂到已变化的布局上
+        visual.dispose();
         return;
       }
-      // 双检查：代次 + 布局 revision + 建筑实例仍是当前布局里的同一个实例。
-      const stale =
-        generation !== this.modelGeneration ||
-        layoutRevision !== this.layoutRevision ||
-        !this.handles.includes(handle) ||
-        handle.building.model !== url;
-      if (stale) {
-        disposeObject(gltf.scene);
-        return;
-      }
-      applyBuildingModel(handle, gltf.scene);
-      this.loadedModelIds.add(handle.building.id);
+      attachBuildingVisual(handle, visual, key);
       this.refreshNearbyBuilding();
     } catch (error) {
-      if (generation === this.modelGeneration) {
-        console.warn(`[world] 建筑模型加载失败，保留灰盒碰撞：${handle.building.id}`, error);
+      // 取消不是失败：不降级、不报错，由新代次重新请求
+      if (error instanceof VisualLoadCancelled) return;
+      if (generation === this.visualGeneration && !this.disposed) {
+        this.keepPlaceholder(handle, describeError(error));
       }
     } finally {
-      this.settleModelLoad(generation);
+      if (this.visualRequests.get(handle.building.id) === token) {
+        this.visualRequests.delete(handle.building.id);
+      }
+      this.settleVisualLoad(generation);
     }
   }
 
-  /** 一次模型加载结束（成功/回退/过期）后的计数；过期代次不得影响新布局的就绪状态。 */
-  private settleModelLoad(generation: number): void {
-    if (this.disposed || generation !== this.modelGeneration) return;
-    this.pendingModelLoads = Math.max(0, this.pendingModelLoads - 1);
-    if (this.pendingModelLoads === 0) this.markCollisionReady();
+  /** 过期判定：任一条件不成立都说明这栋楼的外观已经不代表当前布局。 */
+  private isStaleVisual(
+    handle: BuildingHandle,
+    token: BuildingVisualHandle,
+    key: string,
+    generation: number,
+    layoutRevision: number,
+  ): boolean {
+    if (this.disposed) return true;
+    if (token.cancelled) return true;
+    if (generation !== this.visualGeneration) return true;
+    if (layoutRevision !== this.layoutRevision) return true;
+    if (!this.handles.includes(handle)) return true;
+    const templateVersion = this.districtVersions.get(handle.building.districtId);
+    if (templateVersion === undefined) return true;
+    return visualFingerprint(projectBuildingVisualRequest(handle.building, templateVersion)) !== key;
+  }
+
+  /**
+   * 一次楼体请求结束（成功/明确失败/取消/过期）后的计数。
+   *
+   * 过期代次不得扣当前代次的 pending，也不得触发新代次的就绪；
+   * 当前代次无论成功还是明确失败都恰好结算一次，不会永久停在「正在初始化」。
+   */
+  private settleVisualLoad(generation: number): void {
+    if (this.disposed || generation !== this.visualGeneration) return;
+    this.pendingVisualLoads = Math.max(0, this.pendingVisualLoads - 1);
+    if (this.pendingVisualLoads === 0) this.markCollisionReady();
+  }
+
+  /** 明确降级：保留占位外观（碰撞仍用规划 AABB），并记录一条可追溯的诊断。 */
+  private keepPlaceholder(handle: BuildingHandle, reason: string): void {
+    handle.visualState = 'placeholder';
+    handle.placeholder.visible = true;
+    const { building } = handle;
+    const detail =
+      `${building.id}［${building.kind} ${building.size.width}×${building.size.height}×` +
+      `${building.size.depth} m，${building.districtId}］：${reason}`;
+    if (!this.visualFallbacks.includes(detail)) this.visualFallbacks.push(detail);
+    console.warn(`[world] 建筑视觉明确降级为占位外观 —— ${detail}`);
+  }
+
+  /** 取消上一轮全部在途请求（布局同步与销毁时调用）。已完成并挂载的楼体不受影响。 */
+  private cancelVisualRequests(): void {
+    for (const token of this.visualRequests.values()) token.cancel();
+    this.visualRequests.clear();
+  }
+
+  /** 只读诊断：正式场景里楼体的实际使用情况（不写任何状态）。 */
+  visualReport(): WorldVisualReport {
+    const placeholder: string[] = [];
+    let ready = 0;
+    for (const handle of this.handles) {
+      if (handle.visualState === 'ready') ready += 1;
+      else if (handle.visualState === 'placeholder') placeholder.push(handle.building.id);
+    }
+    return {
+      ready,
+      pending: this.pendingVisualLoads,
+      placeholder,
+      failures: [...this.visualFallbacks],
+      assets: this.visualFactory.stats(),
+    };
   }
 
   /** 碰撞就绪：通知监听者，并把等待中的读档位置修正补上（仅当原位置非法时）。 */
@@ -739,7 +878,7 @@ export class World {
   }
 
   /**
-   * 读档：先落**原始存档 pose**，等当前布局最终碰撞就绪（模型加载完成或明确回退）后，
+   * 读档：先落**原始存档 pose**，等当前布局最终碰撞就绪（楼体挂载完成或明确降级）后，
    * 仅在原位置实际非法时做一次最小必要推出。正常位置不产生任何位移。
    *
    * 调用约定：app 层必须先 `syncLayout(存档布局)` 再 `restore(worldData)`。
@@ -786,8 +925,16 @@ export class World {
     this.refreshNearbyBuilding();
   }
 
+  /**
+   * 销毁顺序固定：先标记失效并取消在途 → 释放场景楼体与占位 → 最后销毁工厂共享资产与 renderer。
+   *
+   * 先取消在途，迟到贴图/模型结果会就地释放且不会再挂回已销毁的场景；
+   * 场景必须在工厂之前释放，否则共享材质/贴图会在楼体还挂在树上时被销毁。
+   */
   dispose(): void {
     this.disposed = true;
+    this.cancelVisualRequests();
+    this.pendingVisualLoads = 0;
     this.readyListeners.clear();
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
@@ -798,6 +945,7 @@ export class World {
     document.removeEventListener('pointerlockchange', this.pointerLockHandler);
     this.player.dispose();
     this.city.dispose();
+    this.visualFactory.dispose();
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement === this.container) {
       this.container.removeChild(this.renderer.domElement);

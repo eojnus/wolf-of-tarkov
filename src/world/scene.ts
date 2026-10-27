@@ -5,24 +5,34 @@
  *  - 本文件只读 `features/city-layout` 的只读视图，不写回逻辑地图，也不读写经济状态；
  *  - 场景实例按稳定 id 增量同步（`CityScene.syncLayout`）：新增的建、移除的销毁，
  *    几何指纹不变的只更新交互数据，**不整场重建**；
- *  - 只有布局建筑带 `model` 时才加载 GLB；`model === null` 的新区建筑只用程序化几何体；
- *  - 模型比例键用 `modelScaleKey ?? id`，与实例 id 分开，基础城区仍走 scene-scale 参照。
+ *  - 每栋楼先用程序化占位外观建立实例（标签、门前广场、旧便利店内景都在这里），
+ *    模块化楼体由 world 向工厂请求后经 `attachBuildingVisual` 挂上：
+ *    成功即隐藏占位，加载中或**明确失败**时才继续显示占位；
+ *  - 楼体的位置与朝向由 `visual.group` 持有（`handle.group` 本身不带变换），
+ *    `visual.envelope` 原位写入 `handle.collider`，**不替换 collider 对象引用**；
+ *  - 释放只有一个入口 `releaseBuildingHandle`：先释放并摘除 visual，再释放本楼独有的
+ *    占位与标签；不得让 `disposeObject(this.scene)` 遍历到别栋共享的材质与贴图。
  */
 
 import * as THREE from 'three';
 import { CAMERA } from '../content/config';
-import { scaleReferenceFor } from '../content/scene-scale';
 import type {
   CityLayoutView,
   LayoutBounds,
   LayoutBuilding,
   LayoutRoad,
 } from '../features/city-layout';
+import {
+  type BuildingVisual,
+  type BuildingVisualFactory,
+  entranceAxis,
+  entranceRotationY,
+} from './buildings';
 
 /**
  * 建筑碰撞盒（世界坐标 AABB）。
  *
- * 模型加载后会就地更新，因此不是 readonly；读取方（人物碰撞、摄像机遮挡、交互距离）
+ * 模块化楼体挂载后就地更新为声明包络；读取方（人物碰撞、摄像机遮挡、交互距离）
  * 只当作只读数据使用，不得自行修改。
  */
 export interface Collider {
@@ -34,17 +44,30 @@ export interface Collider {
   maxY: number;
 }
 
+/** 单栋楼的视觉状态（仅内存，不写存档）。 */
+export type BuildingVisualState = 'pending' | 'ready' | 'placeholder';
+
 export interface BuildingHandle {
   /**
-   * 布局建筑快照。几何不变而业务字段（交互 id / shopId / companyId / 可用性）变化时，
-   * 场景保留实例并更新该引用；几何变化则整个 handle 被替换。
+   * 布局建筑快照。几何不变而业务字段（交互 id / shopId / companyId / 可用性 / 名称）变化时，
+   * 场景保留实例并更新该引用；几何（含商店招牌文字）变化则整个 handle 被替换。
    */
   building: LayoutBuilding;
   readonly collider: Collider;
   readonly group: THREE.Group;
-  /** 灰盒几何体。模型加载成功后隐藏，加载失败时继续使用。 */
+  /** 程序化占位外观（含门前广场、旧便利店内景）。挂上新楼体后隐藏，失败时保留。 */
   readonly placeholder: THREE.Group;
-  readonly label: THREE.Sprite;
+  /**
+   * 标签精灵。名称 / 副标题 / 可用性变化时**就地换一张**（旧精灵的材质与画布贴图随即释放），
+   * 楼体、碰撞盒与 visual 都不动。
+   */
+  label: THREE.Sprite;
+  /** 仅内存：当前挂载的模块化楼体；null 表示加载中或已降级。 */
+  visual: BuildingVisual | null;
+  /** 仅内存：当前 visual 的视觉指纹；与请求指纹不一致的结果一律丢弃。 */
+  visualKey: string | null;
+  /** 仅内存：本栋视觉状态，供诊断与报告使用。 */
+  visualState: BuildingVisualState;
 }
 
 export interface CityScene {
@@ -83,16 +106,6 @@ export function disposeObject(root: THREE.Object3D): void {
       material.dispose();
     }
   });
-}
-
-/** 门朝向主轴：以入口点相对建筑中心的方向决定正面。 */
-function facadeAxis(building: LayoutBuilding): { axis: 'x' | 'z'; sign: number } {
-  const dx = building.entrance.x - building.position.x;
-  const dz = building.entrance.z - building.position.z;
-  if (Math.abs(dx) >= Math.abs(dz)) {
-    return { axis: 'x', sign: Math.sign(dx) || 1 };
-  }
-  return { axis: 'z', sign: Math.sign(dz) || 1 };
 }
 
 /**
@@ -163,6 +176,27 @@ function makeBuildingLabel(building: LayoutBuilding): THREE.Sprite {
   sprite.scale.set(8.4, 2.6, 1);
   sprite.renderOrder = 20;
   return sprite;
+}
+
+/** 释放标签精灵独有的材质与画布贴图（标签不共享，换一张就要清掉旧的）。 */
+function disposeLabel(label: THREE.Sprite): void {
+  label.material.map?.dispose();
+  label.material.dispose();
+}
+
+/**
+ * 就地刷新标签：名称 / 副标题 / 可用性变化时只换这一张精灵。
+ *
+ * 楼体、`visual`、`collider` 对象与楼层高度都不动；新精灵沿用旧精灵的世界位置，
+ * 因此「挂上楼体后抬到 envelope.maxY + 2.6」的结果不会被这次刷新改回去。
+ */
+function refreshBuildingLabel(handle: BuildingHandle): void {
+  const next = makeBuildingLabel(handle.building);
+  next.position.copy(handle.label.position);
+  handle.group.remove(handle.label);
+  disposeLabel(handle.label);
+  handle.label = next;
+  handle.group.add(next);
 }
 
 /* -------------------------------------------------------------- 便利店 */
@@ -244,10 +278,8 @@ function makeShopSignTexture(name: string): THREE.CanvasTexture {
  */
 function buildShopBuilding(building: LayoutBuilding): BuildingHandle {
   const { width, height, depth } = building.size;
-  const { axis, sign } = facadeAxis(building);
-  const normal = new THREE.Vector3(axis === 'x' ? sign : 0, 0, axis === 'z' ? sign : 0);
-  // 本地正面为 -Z，旋转到入口点所在的正面方向
-  const rotationY = Math.atan2(-normal.x, -normal.z);
+  // 本地正面为 -Z：与模块化楼体（局部 +Z 为正面）差 π
+  const rotationY = entranceRotationY(building) + Math.PI;
 
   const halfWidth = width / 2;
   const halfDepth = depth / 2;
@@ -505,24 +537,15 @@ function buildShopBuilding(building: LayoutBuilding): BuildingHandle {
   group.add(placeholder, label);
   group.userData.buildingId = building.id;
 
-  // 碰撞体严格等于配置包围盒：装饰不参与阻挡
-  const collider: Collider = {
-    minX: building.position.x - width / 2,
-    maxX: building.position.x + width / 2,
-    minZ: building.position.z - depth / 2,
-    maxZ: building.position.z + depth / 2,
-    minY: 0,
-    maxY: height,
-  };
-
-  return { building, collider, group, placeholder, label };
+  // 碰撞体严格等于配置包围盒：装饰不参与阻挡（新楼体挂载后改为声明包络，数值相同）
+  return makeHandle(building, group, placeholder, label);
 }
 
 function buildBuilding(building: LayoutBuilding): BuildingHandle {
   if (building.kind === 'shop') return buildShopBuilding(building);
 
   const { width, height, depth } = building.size;
-  const { axis, sign } = facadeAxis(building);
+  const { axis, sign } = entranceAxis(building);
 
   const material = new THREE.MeshStandardMaterial({
     color: building.color,
@@ -611,6 +634,22 @@ function buildBuilding(building: LayoutBuilding): BuildingHandle {
   group.add(placeholder, label);
   group.userData.buildingId = building.id;
 
+  return makeHandle(building, group, placeholder, label);
+}
+
+/**
+ * 建立一个楼宇 handle：占位外观 + 标签 + 与规划占地相同的临时碰撞盒。
+ *
+ * 临时碰撞盒等于布局给的 AABB，模块化楼体挂载后会用声明包络原地覆盖
+ * （数值相同，但保证「碰撞只由规划尺寸决定」这一条在代码里只有一处来源）。
+ */
+function makeHandle(
+  building: LayoutBuilding,
+  group: THREE.Group,
+  placeholder: THREE.Group,
+  label: THREE.Sprite,
+): BuildingHandle {
+  const { width, height, depth } = building.size;
   const collider: Collider = {
     minX: building.position.x - width / 2,
     maxX: building.position.x + width / 2,
@@ -619,68 +658,62 @@ function buildBuilding(building: LayoutBuilding): BuildingHandle {
     minY: 0,
     maxY: height,
   };
-
-  return { building, collider, group, placeholder, label };
+  return { building, collider, group, placeholder, label, visual: null, visualKey: null, visualState: 'pending' };
 }
 
 /**
- * 用外部模型替换灰盒表现，并让碰撞体与实际模型对齐。
+ * 挂上一栋楼的模块化楼体：挂载、隐藏占位、原位写入碰撞与标签高度。
  *
- * 视觉：优先按 scene-scale 的实测参照做**等比**缩放（target / source，setScalar），
- * 比例键用 `modelScaleKey ?? building.id`（与实例 id 分开）；没有参照的模型保留
- * 旧的「三边约束取最小比例」回退。
- * 碰撞：把模型的**最终世界包围盒**写回现有的 handle.collider 对象（不替换对象，
- * 保证 World 保存的引用继续有效）。
- * 业务逻辑完全不知道模型的存在；模型加载失败时保留原灰盒碰撞。
+ * - 变换只应用一次：`visual.group` 自己带世界位置与朝向，`handle.group` 保持单位变换；
+ * - 碰撞写的是**声明包络**（规划尺寸 + 朝向），不是装饰包围盒，也不扩大；
+ * - `handle.collider` 对象引用不变，World 保存的 colliders 数组继续有效。
  */
-export function applyBuildingModel(handle: BuildingHandle, model: THREE.Object3D): void {
-  const { building } = handle;
-  const rawBox = new THREE.Box3().setFromObject(model);
-  const rawSize = rawBox.getSize(new THREE.Vector3());
-  if (rawSize.x <= 0.001 || rawSize.y <= 0.001 || rawSize.z <= 0.001) return;
-
-  const reference = scaleReferenceFor(building.modelScaleKey ?? building.id);
-  const scale = reference
-    ? reference.targetReferenceHeightMeters / reference.sourceReferenceHeight
-    : Math.min(
-        building.size.height / rawSize.y,
-        building.size.width / rawSize.x,
-        building.size.depth / rawSize.z,
-      );
-  if (!Number.isFinite(scale) || scale <= 0) return;
-
-  model.scale.setScalar(scale);
-  model.updateMatrixWorld(true);
-
-  const box = new THREE.Box3().setFromObject(model);
-  const center = box.getCenter(new THREE.Vector3());
-  model.position.x += building.position.x - center.x;
-  model.position.z += building.position.z - center.z;
-  model.position.y -= box.min.y;
-
-  model.traverse((child) => {
-    const mesh = child as THREE.Mesh;
-    if (mesh.isMesh) {
-      mesh.castShadow = false;
-      mesh.receiveShadow = true;
-    }
-  });
-
-  handle.group.add(model);
+export function attachBuildingVisual(handle: BuildingHandle, visual: BuildingVisual, key: string): void {
+  const previous = handle.visual;
+  if (previous && previous !== visual) previous.dispose();
+  handle.visual = visual;
+  handle.visualKey = key;
+  handle.visualState = 'ready';
   handle.placeholder.visible = false;
+  handle.group.add(visual.group);
 
-  // 位置调整完成后重新计算，且只针对模型本身（不含标签、广场、灰盒）
-  model.updateMatrixWorld(true);
-  const worldBox = new THREE.Box3().setFromObject(model);
-  const collider = handle.collider;
-  collider.minX = worldBox.min.x;
-  collider.maxX = worldBox.max.x;
-  collider.minZ = worldBox.min.z;
-  collider.maxZ = worldBox.max.z;
-  collider.minY = worldBox.min.y;
-  collider.maxY = worldBox.max.y;
+  const envelope = visual.envelope;
+  handle.collider.minX = envelope.minX;
+  handle.collider.maxX = envelope.maxX;
+  handle.collider.minZ = envelope.minZ;
+  handle.collider.maxZ = envelope.maxZ;
+  handle.collider.minY = envelope.minY;
+  handle.collider.maxY = envelope.maxY;
+  handle.label.position.set(
+    handle.building.position.x,
+    envelope.maxY + 2.6,
+    handle.building.position.z,
+  );
+}
 
-  handle.label.position.y = worldBox.max.y + 2.4;
+/** 摘下一栋楼的楼体并回到占位外观（指纹变了、或需要重新请求时使用）。 */
+export function detachBuildingVisual(handle: BuildingHandle, factory: BuildingVisualFactory): void {
+  if (handle.visual) factory.release(handle.visual);
+  handle.visual = null;
+  handle.visualKey = null;
+  handle.visualState = 'pending';
+  handle.placeholder.visible = true;
+}
+
+/**
+ * 释放一栋楼 —— **唯一**的释放路径（删除、替换、整场销毁都走这里）。
+ *
+ * 顺序：先释放并摘除模块化楼体（只释放本楼几何与实例），再释放本楼独有的
+ * 占位几何、门前广场与标签贴图。工厂的共享材质/贴图属于资产库，这里一概不碰。
+ */
+export function releaseBuildingHandle(handle: BuildingHandle, factory: BuildingVisualFactory): void {
+  const visual = handle.visual;
+  handle.visual = null;
+  handle.visualKey = null;
+  if (visual) factory.release(visual);
+  handle.group.removeFromParent();
+  disposeObject(handle.group);
+  handle.group.clear();
 }
 
 /* ------------------------------------------------------------------ 道路 */
@@ -791,8 +824,14 @@ function buildTrees(): THREE.Group {
 
 /* ------------------------------------------------------------------ 场景 */
 
-/** 建筑几何指纹：位置/尺寸/外观/模型变了才重建实例；交互 id 等业务字段不重建。 */
-function buildingVisualKey(building: LayoutBuilding): string {
+/**
+ * 楼体几何指纹：只有会改变**楼体几何与材质**的输入才重建实例。
+ *
+ * 位置、尺寸、入口朝向、kind、占位配色、旧模型字段，外加**商店名称**——
+ * 商店名称是新楼体的门头招牌文字，属于真实视觉输入；改名必须重挂楼体（连带占位里的旧招牌）。
+ * 交互 id、shopId、companyId、可用性、非商店的名称/副标题都不在这里：那些只刷新标签。
+ */
+function buildingGeometryKey(building: LayoutBuilding): string {
   return [
     building.position.x,
     building.position.z,
@@ -805,10 +844,14 @@ function buildingVisualKey(building: LayoutBuilding): string {
     building.color,
     building.model ?? '',
     building.modelScaleKey ?? '',
-    building.name,
-    building.subtitle,
-    building.available ? 1 : 0,
+    // 招牌文字只对商店有意义；其他设施改名不影响楼体
+    building.kind === 'shop' ? building.name : '',
   ].join('|');
+}
+
+/** 标签指纹：名称 / 副标题 / 可用性变了就地换标签，不动楼体与碰撞。 */
+function buildingLabelKey(building: LayoutBuilding): string {
+  return [building.name, building.subtitle, building.available ? 1 : 0].join('|');
 }
 
 interface RoadHandle {
@@ -823,12 +866,15 @@ class CitySceneImpl implements CityScene {
   private readonly roadsGroup = new THREE.Group();
   private readonly buildingHandles = new Map<
     string,
-    { readonly handle: BuildingHandle; readonly key: string }
+    { readonly handle: BuildingHandle; readonly key: string; labelKey: string }
   >();
   private readonly roadHandles = new Map<string, RoadHandle>();
   private currentBuildings: BuildingHandle[] = [];
+  /** 建筑视觉工厂由 World 持有；scene 只用它释放单栋楼体，不创建也不销毁资产库。 */
+  private readonly factory: BuildingVisualFactory;
 
-  constructor() {
+  constructor(factory: BuildingVisualFactory) {
+    this.factory = factory;
     this.scene.background = new THREE.Color(SKY_COLOR);
     this.scene.fog = new THREE.Fog(SKY_COLOR, 70, 165);
 
@@ -897,49 +943,65 @@ class CitySceneImpl implements CityScene {
     for (const building of buildings) desired.add(building.id);
     for (const [id, entry] of this.buildingHandles) {
       if (desired.has(id)) continue;
-      this.buildingsGroup.remove(entry.handle.group);
-      disposeObject(entry.handle.group);
+      releaseBuildingHandle(entry.handle, this.factory);
       this.buildingHandles.delete(id);
     }
 
     const ordered: BuildingHandle[] = [];
     for (const building of buildings) {
-      const key = buildingVisualKey(building);
+      const key = buildingGeometryKey(building);
+      const labelKey = buildingLabelKey(building);
       const existing = this.buildingHandles.get(building.id);
       if (existing && existing.key === key) {
-        // 几何不变：只刷新业务字段（interactionId / shopId / companyId / available 等）。
+        // 几何不变：保留 handle、visual 与 collider 引用，只更新业务字段
+        // （interactionId / shopId / companyId 等），标签内容变了就换一张精灵。
         existing.handle.building = building;
+        if (existing.labelKey !== labelKey) {
+          refreshBuildingLabel(existing.handle);
+          existing.labelKey = labelKey;
+        }
         ordered.push(existing.handle);
         continue;
       }
       if (existing) {
-        this.buildingsGroup.remove(existing.handle.group);
-        disposeObject(existing.handle.group);
+        // 替换实例：与删除走同一条释放路径（先 visual，再占位与标签）
+        releaseBuildingHandle(existing.handle, this.factory);
         this.buildingHandles.delete(building.id);
       }
       const handle = buildBuilding(building);
       this.buildingsGroup.add(handle.group);
-      this.buildingHandles.set(building.id, { handle, key });
+      this.buildingHandles.set(building.id, { handle, key, labelKey });
       ordered.push(handle);
     }
     this.currentBuildings = ordered;
   }
 
+  /**
+   * 整场销毁：先逐栋释放（楼体 → 占位/标签），再遍历释放地面、道路、树木与人物。
+   *
+   * 顺序不能反：`disposeObject(this.scene)` 会 `traverse` 到所有网格并释放材质与贴图，
+   * 若共享的楼体材质还挂在树上，就会把别栋仍在用的材质/贴图一起释放。
+   * 工厂的共享资产由 World 在本方法之后统一销毁。
+   */
   dispose(): void {
-    disposeObject(this.scene);
+    for (const entry of this.buildingHandles.values()) {
+      releaseBuildingHandle(entry.handle, this.factory);
+    }
     this.buildingHandles.clear();
+    disposeObject(this.scene);
     this.roadHandles.clear();
     this.currentBuildings = [];
   }
 }
 
 /**
- * 按逻辑布局建立城市场景（灯光、地面、道路、建筑）。
+ * 按逻辑布局建立城市场景（灯光、地面、道路、建筑占位）。
  *
- * 只创建布局里存在的实例；模型加载由 world 负责（本文件只提供 `applyBuildingModel`）。
+ * 只创建布局里存在的实例；模块化楼体由 World 向工厂请求后经 `attachBuildingVisual` 挂载，
+ * 本文件不发起任何异步加载。
  */
-export function buildCityScene(layout: CityLayoutView): CityScene {
-  const city = new CitySceneImpl();
+export function buildCityScene(layout: CityLayoutView, factory: BuildingVisualFactory): CityScene {
+  const city = new CitySceneImpl(factory);
   city.syncLayout(layout);
   return city;
 }

@@ -122,7 +122,11 @@ export interface ResolvedPlan {
 const LIMITS = {
   width: { min: 8, max: 80 },
   depth: { min: 8, max: 60 },
-  height: { min: 6, max: 120 },
+  /**
+   * 高度下限 5 米：住房新区的社区服务用房是真实的 10×8×5 m 输入，
+   * 不能为了让算法好看就把它抬到 6 米。5 米用「单层 + 完整女儿墙」的降级路径实现。
+   */
+  height: { min: 5, max: 120 },
   /** 女儿墙总高（含压顶）的可施工区间。 */
   parapet: { min: 0.35, max: 2.0 },
   /** 压顶厚度：算在女儿墙总高之内，不再额外抬高顶部。 */
@@ -269,7 +273,7 @@ export function resolveBuildingPlan(input: PlanInput): ResolvedPlan {
    * 因此「女儿墙顶 = wallTop + 女儿墙 = 声明高度」而不是再加一层压顶。
    *
    * 低楼空间不足时按以下顺序降级（不抬高声明高度、不放宽包络）：
-   *   ① 保留设备但层数变少 → 改为不带设备（层数优先）
+   *   ① 保留设备但层数变少 / 只剩单层 → 改为不带设备（层数优先；单层楼不摆屋顶设备）
    *   ② 仍放不下 → 把女儿墙压到最小可施工高度
    *   ③ 仍然放不下 → 明确拒绝并给出支持区间
    */
@@ -289,7 +293,14 @@ export function resolveBuildingPlan(input: PlanInput): ResolvedPlan {
   let reserve = parapetHeight;
   let layout = layoutBare;
   let keepEquipment = false;
-  if (equipmentTarget > 0 && layoutWithEquipment.ok && (!layoutBare.ok || layoutWithEquipment.storeys >= layoutBare.storeys)) {
+  // 单层建筑（含 5 米低楼）不摆屋顶设备：水箱/机电房是「上楼」才有的构造，
+  // 在只有一层的体量上既不合比例，也会把唯一的楼层压矮。
+  if (
+    equipmentTarget > 0 &&
+    layoutWithEquipment.ok &&
+    layoutWithEquipment.storeys >= 2 &&
+    (!layoutBare.ok || layoutWithEquipment.storeys >= layoutBare.storeys)
+  ) {
     reserve = Math.max(parapetHeight, equipmentTarget);
     layout = layoutWithEquipment;
     keepEquipment = true;
