@@ -214,7 +214,7 @@ interface MatchCandidate {
   readonly preference: number;
 }
 
-/** 可成交的挂牌住宅：有挂牌、未在保护期、不是买方自己持有的。 */
+/** 市场挂牌住宅：有挂牌、未在保护期；买方自身产权由各匹配路径排除。 */
 function listedHomes(draft: GameState, nowMinute: number): PropertyRecord[] {
   const rows: PropertyRecord[] = [];
   for (const property of draft.realEstate.properties) {
@@ -375,6 +375,8 @@ function runInvestorPurchases(
   for (const entity of PROPERTY_ENTITIES) {
     if (!entity.buysHomes) continue;
     for (const property of homes) {
+      // 机构持有的住宅也可能挂牌，不能把自己的资产选作本月买入目标。
+      if (property.owner.kind === 'investor' && property.owner.id === entity.id) continue;
       const priceCents = property.listing?.priceCents ?? 0;
       if (priceCents <= 0) continue;
       if (priceCents > entity.maxTicketCents) continue;
