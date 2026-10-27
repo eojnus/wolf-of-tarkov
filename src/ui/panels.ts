@@ -15,7 +15,7 @@ import { formatMoneyCompact } from '../core/money';
 import { BRANDING, CONVENIENCE_STORE_NAME, TIME } from '../content/config';
 import type { FocusKey } from '../content/business';
 import type { GameViewModel, PriceDirection } from '../app/view';
-import { PersonalPanel } from './personal-panel';
+import { PersonalPanel, type CapitalMode } from './personal-panel';
 import { GovernmentPanel, type GovernmentTab, type GovernmentUiHandlers } from './government-panel';
 import { ShopPanel, type ShopUiHandlers } from './shop-panel';
 import type { GovernmentPanelView } from '../app/government-view';
@@ -31,7 +31,7 @@ import type {
 } from '../app/securities-view';
 import { GameWindow, type NavGroup, type WindowChrome } from './game-window';
 import type { IconName } from './icons';
-import { renderPause } from './life-panels';
+import { renderBank, renderPause } from './life-panels';
 import {
   estateHeadline,
   renderEstate,
@@ -130,7 +130,7 @@ const ENTRY_META: Record<
     place: `${BRANDING.cityStem}银行`,
     short: '银行',
     kicker: '个人生活',
-    title: '个人财务 · 银行业务',
+    title: '银行业务',
     sub: '存取款与个人贷款只改变资金形态与负债，不改变净资产口径。',
   },
   office: {
@@ -202,27 +202,30 @@ interface SectionSpec {
 }
 
 const SECTIONS: readonly SectionSpec[] = [
-  // 个人生活
+  // 个人（Tab 人物管理）
   { key: 'life.overview', group: 'life', label: '人物总览', icon: 'user', owner: 'personal', personal: 'overview' },
   { key: 'life.inventory', group: 'life', label: '背包', icon: 'backpack', owner: 'personal', personal: 'inventory' },
   { key: 'life.work', group: 'life', label: '工作', icon: 'briefcase', owner: 'personal', personal: 'work', onsite: 'office' },
-  { key: 'life.finance', group: 'life', label: '个人财务', icon: 'wallet', owner: 'personal', personal: 'finance', onsite: 'bank' },
-  { key: 'life.housing', group: 'life', label: '住房与土地', icon: 'house', owner: 'router', onsite: 'home' },
+  { key: 'life.finance', group: 'life', label: '个人财务', icon: 'wallet', owner: 'personal', personal: 'finance' },
+  { key: 'life.stocks', group: 'life', label: '股票持仓', icon: 'chart-pie', owner: 'personal', personal: 'stocks' },
+  // 现场办理页：只有站在对应设施前才出现在导航里
+  { key: 'life.bank', group: 'life', label: '银行业务', icon: 'banknote', owner: 'router', requires: 'bank' },
+  { key: 'life.housing', group: 'life', label: '住房与土地', icon: 'house', owner: 'router', onsite: 'home', requires: 'home' },
   { key: 'life.shop', group: 'life', label: '便利店补给', icon: 'store', owner: 'shop', requires: 'shop' },
 
-  // 企业经营
+  // 我的公司
   { key: 'biz.overview', group: 'business', label: '公司概览', icon: 'building-2', owner: 'personal', personal: 'company' },
   { key: 'biz.research', group: 'business', label: '产品与研发', icon: 'factory', owner: 'personal', personal: 'company' },
   { key: 'biz.talent', group: 'business', label: '人才', icon: 'users', owner: 'personal', personal: 'company' },
-  { key: 'biz.market', group: 'business', label: '销售与营销', icon: 'megaphone', owner: 'personal', personal: 'company' },
+  { key: 'biz.market', group: 'business', label: '市场与竞品', icon: 'chart-line', owner: 'personal', personal: 'company' },
   { key: 'biz.finance', group: 'business', label: '企业财务', icon: 'banknote', owner: 'personal', personal: 'company' },
-  { key: 'biz.capital', group: 'business', label: '股权与治理', icon: 'handshake', owner: 'personal', personal: 'company' },
+  { key: 'biz.ops', group: 'business', label: '日常经营', icon: 'megaphone', owner: 'personal', personal: 'company' },
+  { key: 'biz.governance', group: 'business', label: '公司治理', icon: 'handshake', owner: 'personal', personal: 'company' },
 
-  // 投资市场
-  { key: 'market.quotes', group: 'market', label: '行情', icon: 'chart-line', owner: 'router' },
-  { key: 'market.trade', group: 'market', label: '交易', icon: 'banknote', owner: 'router', requires: 'securities' },
-  { key: 'market.holdings', group: 'market', label: '持仓', icon: 'chart-pie', owner: 'personal', personal: 'stocks' },
-  { key: 'market.company', group: 'market', label: '公司详情', icon: 'file-text', owner: 'router' },
+  // 投资市场（证券中心现场）
+  { key: 'market.quotes', group: 'market', label: '行情与交易', icon: 'chart-line', owner: 'router', requires: 'securities' },
+  { key: 'market.company', group: 'market', label: '公司详情', icon: 'file-text', owner: 'router', requires: 'securities' },
+  { key: 'market.capital', group: 'market', label: '公司与资本', icon: 'handshake', owner: 'personal', personal: 'company', requires: 'securities' },
 
   // 城市事务
   { key: 'city.economy', group: 'city', label: '城市经济', icon: 'chart-line', owner: 'government', requires: 'government' },
@@ -232,22 +235,50 @@ const SECTIONS: readonly SectionSpec[] = [
   { key: 'city.build', group: 'city', label: '建设与城区', icon: 'hammer', owner: 'government', requires: 'government' },
   { key: 'city.history', group: 'city', label: '历史记录', icon: 'clipboard-list', owner: 'government', requires: 'government' },
 
-  // 系统菜单
+  // 系统菜单（Esc / HUD）
   { key: 'sys.menu', group: 'system', label: '保存与菜单', icon: 'save', owner: 'router', requires: 'pause' },
   { key: 'sys.about', group: 'system', label: '游戏信息', icon: 'circle-help', owner: 'router' },
 ];
 
 const GROUPS: ReadonlyArray<{ key: GroupKey; label: string; icon: IconName }> = [
-  { key: 'life', label: '个人生活', icon: 'user' },
-  { key: 'business', label: '企业经营', icon: 'briefcase-business' },
+  { key: 'life', label: '个人', icon: 'user' },
+  { key: 'business', label: '我的公司', icon: 'briefcase-business' },
   { key: 'market', label: '投资市场', icon: 'chart-candlestick' },
   { key: 'city', label: '城市事务', icon: 'landmark' },
   { key: 'system', label: '系统菜单', icon: 'settings' },
 ];
 
-/** 建筑入口默认落在哪个分类上。 */
+/**
+ * 每个打开入口能看到哪些栏目 —— 不在表里的栏目既不显示也不可切换，
+ * 因此不存在「顶层按钮藏起来、子页还能点进去」的中间状态。
+ */
+const ENTRY_SECTIONS: Record<PanelId, readonly string[]> = {
+  personal: [
+    'life.overview',
+    'life.inventory',
+    'life.work',
+    'life.finance',
+    'life.stocks',
+    'biz.overview',
+    'biz.research',
+    'biz.talent',
+    'biz.market',
+    'biz.finance',
+    'biz.ops',
+    'biz.governance',
+  ],
+  bank: ['life.bank'],
+  office: ['life.work'],
+  home: ['life.housing'],
+  shop: ['life.shop'],
+  securities: ['market.quotes', 'market.company', 'market.capital'],
+  government: ['city.economy', 'city.population', 'city.government', 'city.election', 'city.build', 'city.history'],
+  pause: ['sys.menu', 'sys.about'],
+};
+
+/** 建筑入口默认落在哪个栏目上（必须在 ENTRY_SECTIONS 里）。 */
 const ENTRY_SECTION: Record<PanelId, string> = {
-  bank: 'life.finance',
+  bank: 'life.bank',
   office: 'life.work',
   home: 'life.housing',
   securities: 'market.quotes',
@@ -267,14 +298,29 @@ const CITY_TABS: Record<string, readonly GovernmentTab[]> = {
   'city.history': ['history'],
 };
 
-/** 企业经营六个分类对应的公司子页。 */
-const BIZ_SUB: Record<string, 'overview' | 'research' | 'talent' | 'market' | 'finance' | 'capital'> = {
+/** 公司栏目对应的公司子页。 */
+const BIZ_SUB: Record<
+  string,
+  'overview' | 'research' | 'talent' | 'market' | 'finance' | 'capital' | 'actions'
+> = {
   'biz.overview': 'overview',
   'biz.research': 'research',
   'biz.talent': 'talent',
   'biz.market': 'market',
   'biz.finance': 'finance',
-  'biz.capital': 'capital',
+  'biz.ops': 'actions',
+  'biz.governance': 'capital',
+  'market.capital': 'capital',
+};
+
+/**
+ * 资本子页的两种形态（类型定义在 personal-panel）：
+ *  - `full`：证券中心的「公司与资本」，含上市/融资/报价/回购/宣传与治理；
+ *  - `governance`：人物界面「我的公司 › 公司治理」，只保留自有公司的股权、表决与任免。
+ */
+const CAPITAL_MODE: Record<string, CapitalMode> = {
+  'biz.governance': 'governance',
+  'market.capital': 'full',
 };
 
 function esc(text: string): string {
@@ -516,6 +562,8 @@ export class PanelManager {
   private readonly government: GovernmentPanel;
   private readonly shop: ShopPanel;
   private selectedSecurityId = 'YH-01';
+  /** 交易区的买卖模式：只存在内存，不进 GameState、不进存档。 */
+  private tradeSide: 'buy' | 'sell' = 'buy';
 
   constructor(
     root: HTMLElement,
@@ -540,15 +588,13 @@ export class PanelManager {
     this.personal = new PersonalPanel(personalView, {
       onsite: () => this.entry,
       view: () => this.lastView,
+      estate: () => this.estateView(false),
+      // 待办与持仓卡片同样受入口限制：切不到当前入口没有的栏目
+      canOpen: (section) => this.allowedKeys().has(this.keyForSection(section)),
       navigate: (section) => {
-        const key =
-          section === 'stocks'
-            ? 'market.holdings'
-            : section === 'company'
-              ? 'biz.overview'
-              : `life.${section}`;
+        const key = this.keyForSection(section);
         // 只同步分类高亮与标题；栏目本身已经在 personal 内部切换完成
-        if (key !== this.active && this.specOf(key) && !this.isLocked(this.specOf(key)!)) {
+        if (key !== this.active && this.allowedKeys().has(key)) {
           this.active = key;
           this.applySection(true);
         }
@@ -585,16 +631,10 @@ export class PanelManager {
     this.shop.resetSession();
   }
 
-  /** 打开人物界面的指定分类（便利店「打开背包」快捷入口）。 */
+  /** 打开人物界面的指定分类（便利店「打开背包」快捷入口），同样受入口限制。 */
   openPersonalSection(section: PersonalSection): void {
     if (!this.win.isMounted) return;
-    const key =
-      section === 'stocks'
-        ? 'market.holdings'
-        : section === 'company'
-          ? 'biz.overview'
-          : `life.${section}`;
-    this.selectSection(key);
+    this.selectSection(this.keyForSection(section));
   }
 
   /** Esc：先关最上层股票浮窗；没有浮窗返回 false，交给上层关闭整个界面。 */
@@ -616,7 +656,9 @@ export class PanelManager {
     this.lastView = view;
     this.deferredView = null;
     this.paintedScroll = 0;
-    this.active = ENTRY_SECTION[id];
+    const allowed = this.allowedKeys();
+    const landing = ENTRY_SECTION[id];
+    this.active = allowed.has(landing) ? landing : (allowed.values().next().value ?? null);
 
     if (this.personal.isMounted) this.personal.teardown();
     destroyStockCharts(this.win.content);
@@ -636,6 +678,7 @@ export class PanelManager {
   close(): void {
     if (!this.win.isMounted) {
       this.active = null;
+      this.entry = null;
       return;
     }
     this.active = null;
@@ -644,6 +687,8 @@ export class PanelManager {
     destroyStockCharts(this.win.content);
     this.win.unmount();
     this.root.innerHTML = '';
+    // 关闭即失去现场上下文：不留任何可被旧事件复用的入口权限
+    this.entry = null;
   }
 
   /**
@@ -673,8 +718,7 @@ export class PanelManager {
 
   private selectSection(key: string): void {
     if (key === this.active) return;
-    const spec = this.specOf(key);
-    if (!spec || this.isLocked(spec)) return;
+    if (!this.allowedKeys().has(key)) return;
     this.active = key;
     this.paintedScroll = 0;
     this.applySection(true);
@@ -684,28 +728,39 @@ export class PanelManager {
     return SECTIONS.find((item) => item.key === key) ?? null;
   }
 
-  private isLocked(spec: SectionSpec): boolean {
-    return spec.requires !== undefined && this.entry !== spec.requires;
+  /** 人物界面内部栏目 → 栏目 key（待办、持仓卡片与快捷入口共用同一份映射）。 */
+  private keyForSection(section: PersonalSection): string {
+    if (section === 'stocks') return 'life.stocks';
+    if (section === 'company') return 'biz.overview';
+    return `life.${section}`;
   }
 
-  private navGroups(): NavGroup[] {
+  /**
+   * 当前入口可访问的栏目集合：
+   * 既要在 ENTRY_SECTIONS 里，也要满足 `requires` 的现场条件（双重检查）。
+   */
+  private allowedKeys(): ReadonlySet<string> {
+    const entry = this.entry;
+    const allowed = new Set<string>();
+    if (!entry) return allowed;
+    for (const key of ENTRY_SECTIONS[entry]) {
+      const spec = this.specOf(key);
+      if (!spec) continue;
+      if (spec.requires !== undefined && spec.requires !== entry) continue;
+      allowed.add(key);
+    }
+    return allowed;
+  }
+
+  private navGroups(allowed: ReadonlySet<string>): NavGroup[] {
     return GROUPS.map((group) => ({
       key: group.key,
       label: group.label,
       icon: group.icon,
-      items: SECTIONS.filter((item) => item.group === group.key).map((item) => ({
-        key: item.key,
-        label: item.label,
-        icon: item.icon,
-        lockedNote: item.requires ? this.lockedNote(item.requires) : undefined,
-      })),
-    }));
-  }
-
-  private lockedNote(requires: PanelId): string {
-    if (requires === 'pause') return 'Esc';
-    const meta = ENTRY_META[requires];
-    return meta.short ?? '现场';
+      items: SECTIONS.filter((item) => item.group === group.key && allowed.has(item.key)).map(
+        (item) => ({ key: item.key, label: item.label, icon: item.icon }),
+      ),
+    })).filter((group) => group.items.length > 0);
   }
 
   /** 分类切换的唯一入口：同步导航、标题、内容归属与滚动位置。 */
@@ -713,10 +768,8 @@ export class PanelManager {
     const spec = this.active ? this.specOf(this.active) : null;
     if (!spec || !this.lastView) return;
 
-    const locked = new Set(
-      SECTIONS.filter((item) => this.isLocked(item)).map((item) => item.key),
-    );
-    this.win.setNav(this.navGroups(), spec.key, locked);
+    // 导航只列出当前入口真正能进的栏目，不再出现「看得见、点不进」的锁定项
+    this.win.setNav(this.navGroups(this.allowedKeys()), spec.key);
 
     const meta = ENTRY_META[this.entry ?? 'personal'];
     const chrome = this.chromeFor(spec, meta);
@@ -749,7 +802,11 @@ export class PanelManager {
         destroyStockCharts(content);
         this.personal.mount(content, this.win.floatLayer);
       }
-      this.personal.setScope(section, BIZ_SUB[spec.key]);
+      this.personal.setScope(
+        section,
+        BIZ_SUB[spec.key],
+        CAPITAL_MODE[spec.key] ?? 'full',
+      );
       return;
     }
     if (this.personal.isMounted) this.personal.teardown();
@@ -767,8 +824,11 @@ export class PanelManager {
         .join('')}</div>`;
     }
     switch (spec.key) {
+      case 'life.bank':
+        // 银行入口只提供银行业务本体：存取款与既有贷款，不再顺带展示整页个人财务
+        return `<div class="gw-section">${renderBank(view)}</div>`;
       case 'life.housing': {
-        // 住房与土地：远程只读，晴川公寓现场才出现交易按钮与休息入口
+        // 住房与土地：晴川公寓现场办理交易与休息；其它上下文只给只读摘要（正常不可达）
         const onsite = this.entry === 'home';
         const estate = this.estateView(onsite);
         const head = `<div class="note">${esc(estateHeadline(estate))}</div>`;
@@ -778,8 +838,6 @@ export class PanelManager {
       }
       case 'market.quotes':
         return this.renderQuotes(view);
-      case 'market.trade':
-        return this.renderTrade(view);
       case 'market.company':
         return this.renderCompany(view);
       case 'sys.menu':
@@ -987,8 +1045,18 @@ export class PanelManager {
         break;
       case 'select-security': {
         const id = target.dataset.security;
-        if (id) {
+        if (id && id !== this.selectedSecurityId) {
           this.selectedSecurityId = id;
+          // 换标的必须丢掉旧标的的数量草稿与预览：不能把上一只股票的数量当作这一只的输入
+          this.clearTradeDrafts();
+          if (this.lastView) this.paintBody(this.lastView);
+        }
+        break;
+      }
+      case 'trade-side': {
+        const side = target.dataset.side;
+        if ((side === 'buy' || side === 'sell') && side !== this.tradeSide) {
+          this.tradeSide = side;
           if (this.lastView) this.paintBody(this.lastView);
         }
         break;
@@ -1243,7 +1311,7 @@ export class PanelManager {
     const name = target.getAttribute('data-el');
     if (name !== 'buy-input' && name !== 'sell-input') return;
     if (!this.lastView) return;
-    if (this.active !== 'market.trade' && this.active !== 'market.quotes') return;
+    if (this.active !== 'market.quotes') return;
     this.patchLive(this.lastView);
   };
 
@@ -1273,14 +1341,22 @@ export class PanelManager {
 
   private securitiesOf(): SecuritiesPanelView | null {
     if (!this.active) return null;
-    if (
-      this.active !== 'market.quotes' &&
-      this.active !== 'market.trade' &&
-      this.active !== 'market.company'
-    ) {
+    if (this.active !== 'market.quotes' && this.active !== 'market.company') {
       return null;
     }
     return this.securitiesView(this.selectedSecurityId, this.currentOrder());
+  }
+
+  /** 清空交易输入与预览价格：切换标的后不复用旧的数量与成交价。 */
+  private clearTradeDrafts(): void {
+    for (const name of ['buy-input', 'sell-input']) {
+      const input = this.root.querySelector<HTMLInputElement>(`[data-el="${name}"]`);
+      if (input) input.value = '';
+    }
+    for (const name of ['buy-preview', 'sell-preview']) {
+      const node = this.root.querySelector<HTMLElement>(`[data-el="${name}"]`);
+      if (node) delete node.dataset.price;
+    }
   }
 
   private readMoney(name: string): number {
@@ -1413,7 +1489,11 @@ export class PanelManager {
       </div>`;
   }
 
-  private renderQuotes(_view: GameViewModel): string {
+  /**
+   * 行情与交易合成一页：选股与行情摘要 → K 线 → 同一标的的交易区 → 必要持仓资料。
+   * 交易片段只渲染一次，不再嵌入完整交易页，因此没有重复的标题、选择器与事件监听。
+   */
+  private renderQuotes(view: GameViewModel): string {
     const securities = this.securitiesView(this.selectedSecurityId, this.currentOrder());
     const selected = securities.selected;
     if (!selected) {
@@ -1440,21 +1520,131 @@ export class PanelManager {
             </div>
           </div>
         </div>
+        <div class="note" style="margin-top:6px">${esc(securities.spanText)} · 每 ${securities.tickMinutes} 分钟一根 K 线 · ${esc(securities.companyNote)}</div>
+      </div>
+      <div class="sec-layout">
+        <div class="sec-main">${this.renderTradeArea(securities)}</div>
+        <div class="sec-side">${this.renderHoldingSide(selected, view)}</div>
       </div>
       <div class="block">
-        <div class="stat-grid">
-          ${stat('时间跨度', securities.spanText, { note: `每 ${securities.tickMinutes} 分钟一根` })}
-          ${stat('当前持股', selected.sharesText, { note: selected.shares > 0 ? 'T+0 即时可卖' : '空仓', live: 'stock.shares' })}
-          ${stat('持仓市值', selected.valueText, { live: 'stock.marketValue' })}
-        </div>
-        <div class="note" style="margin-top:8px">${esc(securities.companyNote)}</div>
-        <div class="note">公司证券价格按经营估值锚定并有界波动；独立证券保持零趋势随机。交易使用真实账户与真实股份库存，公司融资与回购也会进入同一价格历史。成交量与历史分钟数据当前没有实现，界面不显示也不推算这些字段。</div>
-      </div>
-      <div class="block">
-        <div class="block-title">标的</div>
+        <div class="block-title">全部标的</div>
         ${this.renderHoldingsTable(securities)}
       </div>
+      <div class="note">公司证券价格按经营估值锚定并有界波动；独立证券保持零趋势随机。交易使用真实账户与真实股份库存，公司融资与回购也会进入同一价格历史。成交量与历史分钟数据当前没有实现，界面不显示也不推算这些字段。</div>
     </div>`;
+  }
+
+  /** 交易区：买入/卖出只是同一块表单的两种模式，提交仍各走原命令一次。 */
+  private renderTradeArea(securities: SecuritiesPanelView): string {
+    const tradeDisabled = securities.companyDetail.terminated;
+    const buy = this.tradeSide === 'buy';
+    return `<div class="block">
+      <div class="block-title">交易 · 银行存款结算</div>
+      <div class="sec-switch" role="group" aria-label="选择买入或卖出">
+        <button type="button" class="sec-switch-item${buy ? ' is-active' : ''}" data-action="trade-side" data-side="buy" aria-pressed="${buy}">买入</button>
+        <button type="button" class="sec-switch-item${buy ? '' : ' is-active'}" data-action="trade-side" data-side="sell" aria-pressed="${!buy}">卖出</button>
+      </div>
+      ${buy ? this.renderBuyForm(securities, tradeDisabled) : this.renderSellForm(securities, tradeDisabled)}
+    </div>`;
+  }
+
+  private renderBuyForm(securities: SecuritiesPanelView, tradeDisabled: boolean): string {
+    return `
+      <div class="field-row">
+        <input class="field" data-el="buy-input" inputmode="numeric" placeholder="买入股数" ${
+          tradeDisabled ? 'disabled' : ''
+        } />
+        <button type="button" class="btn btn-primary" data-action="buy" ${
+          securities.maxBuy > 0 && !tradeDisabled ? '' : 'disabled'
+        }>买入</button>
+      </div>
+      <div class="quick-row">
+        ${[10, 50, 100]
+          .map(
+            (count) =>
+              `<button type="button" class="btn btn-sm" data-action="buy-quick" data-shares="${count}" ${
+                tradeDisabled ? 'disabled' : ''
+              }>${count} 股</button>`,
+          )
+          .join('')}
+        <button type="button" class="btn btn-sm" data-action="buy-quick" data-shares="max" ${
+          tradeDisabled ? 'disabled' : ''
+        }><span data-live="stock.maxBuyLabel">最多 ${securities.maxBuy} 股</span></button>
+      </div>
+      <div class="note" style="margin-top:8px" data-live="stock.buyNote">${esc(securities.buyNote)}</div>
+      <div class="note preview-line" data-el="buy-preview"${
+        securities.buyPreview && securities.buyPreview.executableShares > 0
+          ? ` data-price="${securities.buyPreview.priceCents}"`
+          : ''
+      } data-live="trade.buyPreview">${esc(
+        previewText(securities.buyPreview, '输入买入股数后显示这一笔的均价、总额与价格影响'),
+      )}</div>
+      <div class="note" style="margin-top:6px">成交价由业务预览决定：确认后价格或数量变化会要求重新确认，不静默换价、不缩量。</div>`;
+  }
+
+  private renderSellForm(securities: SecuritiesPanelView, tradeDisabled: boolean): string {
+    return `
+      <div class="field-row">
+        <input class="field" data-el="sell-input" inputmode="numeric" placeholder="卖出股数" ${
+          tradeDisabled ? 'disabled' : ''
+        } />
+        <button type="button" class="btn" data-action="sell" ${
+          securities.maxSell > 0 && !tradeDisabled ? '' : 'disabled'
+        }>卖出</button>
+      </div>
+      <div class="quick-row">
+        <button type="button" class="btn btn-sm" data-action="sell-quick" data-shares="10" ${
+          tradeDisabled ? 'disabled' : ''
+        }>10 股</button>
+        <button type="button" class="btn btn-sm" data-action="sell-all" ${
+          securities.maxSell > 0 && !tradeDisabled ? '' : 'disabled'
+        }>填入全部持仓</button>
+      </div>
+      <div class="note" style="margin-top:8px">${esc(securities.sellNote)}</div>
+      <div class="note preview-line" data-el="sell-preview"${
+        securities.sellPreview && securities.sellPreview.executableShares > 0
+          ? ` data-price="${securities.sellPreview.priceCents}"`
+          : ''
+      } data-live="trade.sellPreview">${esc(
+        previewText(securities.sellPreview, '输入卖出股数后显示这一笔的均价、总额与价格影响'),
+      )}</div>
+      <div class="note" style="margin-top:6px">「填入全部持仓」只会把持仓数量填进输入框并刷新预览，仍需点「卖出」并在确认框里确认数量与金额；卖出不会自动变成清仓。</div>`;
+  }
+
+  private renderHoldingSide(
+    selected: SecuritiesPanelView['selected'],
+    view: GameViewModel,
+  ): string {
+    if (!selected) return '';
+    return `
+      <div class="block">
+        <div class="block-title">你的持仓</div>
+        <div class="stat-grid">
+          ${stat('持股数量', selected.sharesText, {
+            live: 'stock.shares',
+            note: selected.shares > 0 ? 'T+0 即时可卖' : '空仓',
+          })}
+          ${stat('平均成本', selected.avgCostText, { live: 'stock.avgCost' })}
+          ${stat('持仓市值', selected.valueText, { live: 'stock.marketValue' })}
+          ${stat('浮动盈亏', selected.pnlText, {
+            live: 'stock.unrealized',
+            tone: selected.shares > 0 ? (selected.pnlPositive ? 'up' : 'down') : undefined,
+          })}
+          ${stat('已实现盈亏', selected.realizedText, {
+            live: 'stock.realized',
+            tone: selected.realizedPositive ? 'up' : 'down',
+          })}
+          ${stat('成交笔数', selected.tradesText, { live: 'stock.trades' })}
+          ${stat('可用于买入', view.money.savingsText, {
+            live: 'money.savings',
+            note: '买入只从银行存款扣款，现金不计入',
+          })}
+        </div>
+      </div>
+      <div class="block">
+        <div class="block-title">买卖口径</div>
+        <div class="note">成交价与预览价不一致时会明确拒绝，不会静默换价或缩量成交。买入受在售股份与银行存款限制，卖出只卖出你输入的数量；成交价由业务预览决定，不能手动填写。</div>
+      </div>`;
   }
 
   private renderHoldingsTable(view: SecuritiesPanelView): string {
@@ -1475,111 +1665,6 @@ export class PanelManager {
     return `<div class="table-wrap"><table class="pp-table">
       <thead><tr><th>代码</th><th>现价</th><th>涨跌幅</th><th>持仓</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
-  }
-
-  private renderTrade(_view: GameViewModel): string {
-    const securities = this.securitiesView(this.selectedSecurityId, this.currentOrder());
-    const selected = securities.selected;
-    if (!selected) {
-      return `<div class="gw-section"><div class="empty">暂无可用证券</div></div>`;
-    }
-    const tradeDisabled = securities.companyDetail.terminated;
-    return `<div class="gw-section">
-      ${this.renderSecurityTabs(securities)}
-      ${this.renderQuoteHead(securities)}
-      <div class="sec-layout">
-        <div class="sec-main">
-          <div class="block">
-            <div class="block-title">买入 · 银行存款结算</div>
-            <div class="field-row">
-              <input class="field" data-el="buy-input" inputmode="numeric" placeholder="买入股数" ${
-                tradeDisabled ? 'disabled' : ''
-              } />
-              <button type="button" class="btn btn-primary" data-action="buy" ${
-                securities.maxBuy > 0 && !tradeDisabled ? '' : 'disabled'
-              }>买入</button>
-            </div>
-            <div class="quick-row">
-              ${[10, 50, 100]
-                .map(
-                  (count) =>
-                    `<button type="button" class="btn btn-sm" data-action="buy-quick" data-shares="${count}" ${
-                      tradeDisabled ? 'disabled' : ''
-                    }>${count} 股</button>`,
-                )
-                .join('')}
-              <button type="button" class="btn btn-sm" data-action="buy-quick" data-shares="max" ${
-                tradeDisabled ? 'disabled' : ''
-              }><span data-live="stock.maxBuyLabel">最多 ${securities.maxBuy} 股</span></button>
-            </div>
-            <div class="note" style="margin-top:8px" data-live="stock.buyNote">${esc(securities.buyNote)}</div>
-            <div class="note preview-line" data-el="buy-preview"${
-              securities.buyPreview && securities.buyPreview.executableShares > 0
-                ? ` data-price="${securities.buyPreview.priceCents}"`
-                : ''
-            } data-live="trade.buyPreview">${esc(
-              previewText(securities.buyPreview, '输入买入股数后显示这一笔的均价、总额与价格影响'),
-            )}</div>
-          </div>
-
-          <div class="block">
-            <div class="block-title">卖出 · 只卖出你输入的数量</div>
-            <div class="field-row">
-              <input class="field" data-el="sell-input" inputmode="numeric" placeholder="卖出股数" ${
-                tradeDisabled ? 'disabled' : ''
-              } />
-              <button type="button" class="btn" data-action="sell" ${
-                securities.maxSell > 0 && !tradeDisabled ? '' : 'disabled'
-              }>卖出</button>
-            </div>
-            <div class="quick-row">
-              <button type="button" class="btn btn-sm" data-action="sell-quick" data-shares="10" ${
-                tradeDisabled ? 'disabled' : ''
-              }>10 股</button>
-              <button type="button" class="btn btn-sm" data-action="sell-all" ${
-                securities.maxSell > 0 && !tradeDisabled ? '' : 'disabled'
-              }>填入全部持仓</button>
-            </div>
-            <div class="note" style="margin-top:8px">${esc(securities.sellNote)}</div>
-            <div class="note preview-line" data-el="sell-preview"${
-              securities.sellPreview && securities.sellPreview.executableShares > 0
-                ? ` data-price="${securities.sellPreview.priceCents}"`
-                : ''
-            } data-live="trade.sellPreview">${esc(
-              previewText(securities.sellPreview, '输入卖出股数后显示这一笔的均价、总额与价格影响'),
-            )}</div>
-            <div class="note" style="margin-top:6px">「填入全部持仓」只会把持仓数量填进输入框并刷新预览，仍需点「卖出」并在确认框里确认数量与金额；卖出不会自动变成清仓。</div>
-          </div>
-        </div>
-
-        <div class="sec-side">
-          <div class="block">
-            <div class="block-title">你的持仓</div>
-            <div class="stat-grid">
-              ${stat('持股数量', selected.sharesText, {
-                live: 'stock.shares',
-                note: selected.shares > 0 ? 'T+0 即时可卖' : '空仓',
-              })}
-              ${stat('平均成本', selected.avgCostText, { live: 'stock.avgCost' })}
-              ${stat('持仓市值', selected.valueText, { live: 'stock.marketValue' })}
-              ${stat('浮动盈亏', selected.pnlText, {
-                live: 'stock.unrealized',
-                tone: selected.shares > 0 ? (selected.pnlPositive ? 'up' : 'down') : undefined,
-              })}
-              ${stat('已实现盈亏', selected.realizedText, {
-                live: 'stock.realized',
-                tone: selected.realizedPositive ? 'up' : 'down',
-              })}
-              ${stat('成交笔数', selected.tradesText, { live: 'stock.trades' })}
-            </div>
-          </div>
-          <div class="block">
-            <div class="block-title">买卖口径</div>
-            <div class="note">成交价与预览价不一致时会明确拒绝，不会静默换价或缩量成交。买入受在售股份与银行存款限制，卖出只卖出你输入的数量。</div>
-          </div>
-        </div>
-      </div>
-    </div>`;
   }
 
   private renderCompany(_view: GameViewModel): string {
@@ -1611,7 +1696,7 @@ export class PanelManager {
         <div class="block-title">界面说明</div>
         <div class="note">管理窗口以浮动面板覆盖在城市场景之上，一次只打开一个；股票详情是辅助浮窗，最多同时打开两个。</div>
         <div class="note">拖动标题栏可移动窗口，双击标题栏或右上角按钮可放大与恢复；位置与放大状态只在内存中，不写入存档。</div>
-        <div class="note">打开管理窗口时模拟继续，只有「系统菜单 › 保存与菜单」会暂停时间。</div>
+        <div class="note">打开管理窗口时模拟继续；只有按 Esc 或 HUD「菜单」打开的系统菜单会暂停时间。</div>
         <div class="note">图标来自 Lucide（ISC 许可证），中文字体使用系统字体栈，资源来源见 public/assets/SOURCES.md。</div>
       </div>
       <div class="block">

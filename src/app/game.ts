@@ -37,6 +37,7 @@ import { CapitalCommands } from './capital';
 import { GameCommands } from './commands';
 import { SuppliesCommands } from './supplies';
 import { EstateCommands } from './real-estate-commands';
+import { entryAllows, entryDeniedMessage, type EntryCapability } from './entry-policy';
 import { buildEstateView } from './real-estate-view';
 import { buildSuppliesView } from './supplies-view';
 import { moveMultiplierOf } from '../features/survival';
@@ -160,10 +161,12 @@ export class Game {
       onClose: () => this.closePanel(),
       onResume: () => this.resumeFromPause(),
       onHire: (jobId?: string) => {
+        if (!this.guardEntry('employment')) return;
         this.commands.hire(jobId);
         this.syncClockUi();
       },
       onWorkShift: (minutes?: number) => {
+        if (!this.guardEntry('employment')) return;
         this.commands.workShift(minutes);
         this.syncClockUi();
       },
@@ -176,23 +179,29 @@ export class Game {
         this.syncClockUi();
       },
       onDeposit: (cents) => {
+        if (!this.guardEntry('banking')) return;
         this.commands.deposit(cents);
       },
       onWithdraw: (cents) => {
+        if (!this.guardEntry('banking')) return;
         this.commands.withdraw(cents);
       },
       onBuyStock: (securityId, shares, expectedPriceCents) => {
+        if (!this.guardEntry('trading')) return;
         this.commands.buyStock(securityId, shares, expectedPriceCents);
       },
       onSellStock: (securityId, shares, expectedPriceCents) =>
         this.confirmSell(securityId, shares, expectedPriceCents),
       onBorrow: (cents) => {
+        if (!this.guardEntry('banking')) return;
         this.commands.borrowLoan(cents);
       },
       onRepay: (cents) => {
+        if (!this.guardEntry('banking')) return;
         this.commands.repayLoan(cents);
       },
       onRepayAll: () => {
+        if (!this.guardEntry('banking')) return;
         this.commands.repayLoanAll();
       },
       onSave: () => {
@@ -235,33 +244,43 @@ export class Game {
       onSetMarketing: (productId, dailyCents) =>
         this.business.setMarketing(productId, dailyCents),
       onStopProduct: (productId) => this.business.stopProduct(productId),
-      onRequestFinancing: (cents) => this.capital.requestFinancing(cents),
-      onAcceptQuote: (quoteId) => this.capital.acceptQuote(quoteId),
-      onRejectQuotes: () => this.capital.rejectQuotes(),
-      onListCompany: () => this.capital.listCompany(),
+      onRequestFinancing: (cents) =>
+        this.withEntry('capital', () => this.capital.requestFinancing(cents)),
+      onAcceptQuote: (quoteId) =>
+        this.withEntry('capital', () => this.capital.acceptQuote(quoteId)),
+      onRejectQuotes: () => this.withEntry('capital', () => this.capital.rejectQuotes()),
+      onListCompany: () => this.withEntry('capital', () => this.capital.listCompany()),
       onBuyback: (companyId, shares, expectedPriceCents) =>
         this.confirmBuyback(companyId, shares, expectedPriceCents),
-      onPromote: (cents) => this.capital.promote(cents),
-      onAppointCeo: (companyId, holderId) => this.capital.appointCeo(companyId, holderId),
-      onRemoveCeo: (companyId, holderId) => this.capital.removeCeo(companyId, holderId),
+      onPromote: (cents) => this.withEntry('capital', () => this.capital.promote(cents)),
+      onAppointCeo: (companyId, holderId) =>
+        this.withGovernance(companyId, () => this.capital.appointCeo(companyId, holderId)),
+      onRemoveCeo: (companyId, holderId) =>
+        this.withGovernance(companyId, () => this.capital.removeCeo(companyId, holderId)),
       onVoteProposal: (companyId, proposalId, choice) =>
-        this.capital.voteOnProposal(companyId, proposalId, choice),
+        this.withGovernance(companyId, () =>
+          this.capital.voteOnProposal(companyId, proposalId, choice),
+        ),
       onUseItem: (itemId, requestId) => this.supplies.useItem(itemId, requestId),
       onBuyHome: (propertyId, priceCents, listingVersion) =>
         this.confirmBuyHome(propertyId, priceCents, listingVersion),
       onBuyLand: (propertyId, priceCents) => this.confirmBuyLand(propertyId, priceCents),
       onListHome: (propertyId, priceCents, expectedVersion) =>
-        this.estate.listHome(propertyId, priceCents, expectedVersion),
+        this.withEntry('estate', () =>
+          this.estate.listHome(propertyId, priceCents, expectedVersion),
+        ),
       onCancelListing: (propertyId, expectedVersion) =>
-        this.estate.cancelListing(propertyId, expectedVersion),
+        this.withEntry('estate', () => this.estate.cancelListing(propertyId, expectedVersion)),
       onAcceptOffer: (offerId, priceCents) => this.confirmAcceptOffer(offerId, priceCents),
-      onRejectOffer: (offerId) => this.estate.rejectOffer(offerId),
+      onRejectOffer: (offerId) => this.withEntry('estate', () => this.estate.rejectOffer(offerId)),
     }, (query) => buildPersonalView(this.store.state, query),
     (securityId, order) => buildSecuritiesPanel(this.store.state, securityId, order),
     () => buildGovernmentView(this.store.state),
     {
       onSponsor: (candidateId, amountCents, requestId) =>
-        this.government.sponsor(candidateId, amountCents, requestId),
+        this.guardEntry('sponsorship')
+          ? this.government.sponsor(candidateId, amountCents, requestId)
+          : { ok: false, message: null },
     },
     () => buildCityEconomyView(this.store.state),
     () => buildSuppliesView(this.store.state, this.activeShopId),
@@ -269,11 +288,13 @@ export class Game {
       onPurchase: (shopId, itemId, quantity, requestId) =>
         this.supplies.purchase(shopId, itemId, quantity, requestId),
       onHire: (jobId) => {
+        if (!this.guardEntry('employment')) return { ok: false, message: null };
         const outcome = this.commands.hire(jobId);
         this.syncClockUi();
         return outcome;
       },
       onWorkShift: (minutes?: number) => {
+        if (!this.guardEntry('employment')) return { ok: false, message: null };
         const outcome = this.commands.workShift(minutes);
         this.syncClockUi();
         return outcome;
@@ -432,7 +453,7 @@ export class Game {
     }
     if (result.researchCompletions.length > 0) {
       const count = result.researchCompletions.length;
-      this.toast.show('success', `有 ${count} 个研发项目完成，可到企业管理面板发布`);
+      this.toast.show('success', `有 ${count} 个研发项目完成，可到「我的公司 › 产品与研发」发布`);
     }
     for (const event of result.governmentEvents) {
       if (!event.message) continue;
@@ -663,6 +684,51 @@ export class Game {
     this.updateLockOverlay();
   }
 
+  /* -------------------------------------------------------- 入口能力检查 */
+
+  /**
+   * 玩家界面入口的现场检查。
+   *
+   * 只拦「玩家从界面提交」这一层：底层命令、AI 决策、定时模拟与月结都不经过这里，
+   * 金额/股数/价格/权限等业务校验仍由原命令执行。判定表在 entry-policy，
+   * 权限只存在内存，不写 `GameState`、不进存档。
+   */
+  private guardEntry(capability: EntryCapability): boolean {
+    if (entryAllows(this.panels.activePanel, capability)) return true;
+    this.toast.show('error', entryDeniedMessage(capability));
+    return false;
+  }
+
+  /** 需要原样返回命令结果的操作用这个包装：入口不符时给出统一的失败结果。 */
+  private withEntry(capability: EntryCapability, run: () => CommandOutcome): CommandOutcome {
+    if (!this.guardEntry(capability)) return { ok: false, message: null };
+    return run();
+  }
+
+  /**
+   * 治理类操作的入口检查：除入口本身，还要核对**目标公司**。
+   *
+   * 人物界面只能办理当前管理公司（`managedCompany`，即 CEO 身份）的治理；
+   * 其它持股公司的股东权利留在证券中心，按其原有业务权限校验。
+   * 这里只决定「这次界面调用能不能到达命令」，不改变 `capital.ts` 内部的提案/任免判断。
+   */
+  private guardGovernance(companyId: string): boolean {
+    if (!this.guardEntry('governance')) return false;
+    if (this.panels.activePanel !== 'personal') return true;
+    const business = buildViewModel(this.store.state).business;
+    if (business.canManage && business.id === companyId) return true;
+    this.toast.show(
+      'error',
+      '人物界面只能办理当前管理公司的治理事项：其它持股公司的股东权利请到证券中心处理。',
+    );
+    return false;
+  }
+
+  private withGovernance(companyId: string, run: () => CommandOutcome): CommandOutcome {
+    if (!this.guardGovernance(companyId)) return { ok: false, message: null };
+    return run();
+  }
+
   /* ------------------------------------------------------------ 清算确认 */
 
   /**
@@ -709,6 +775,7 @@ export class Game {
     shares: number,
     expectedPriceCents: number | null,
   ): CommandOutcome {
+    if (!this.guardEntry('trading')) return { ok: false, message: null };
     if (!securityId) return { ok: false, message: null };
     if (!Number.isSafeInteger(shares) || shares <= 0) {
       this.toast.show('error', '请先输入要卖出的股数（不会自动按全部持仓卖出）');
@@ -745,6 +812,8 @@ export class Game {
       '确认后按当前行情重新校验：数量或价格变化会要求你重新确认，不会静默改变成交结果。',
     ];
     if (!window.confirm(lines.join('\n'))) return { ok: false, message: null };
+    // 确认框是阻塞的，期间可能已经关闭/切换窗口：提交前再检查一次现场
+    if (!this.guardEntry('trading')) return { ok: false, message: null };
     return this.commands.sellStock(securityId, shares, preview.priceCents);
   }
 
@@ -767,6 +836,7 @@ export class Game {
     priceCents: number,
     listingVersion: number,
   ): CommandOutcome {
+    if (!this.guardEntry('estate')) return { ok: false, message: null };
     if (!propertyId) return { ok: false, message: null };
     const view = buildEstateView(this.store.state, true);
     const card = view.marketHomes.find((item) => item.id === propertyId);
@@ -797,11 +867,13 @@ export class Game {
       '二是持有期间没有租金收入，卖出需要重新挂牌并由市场成交。',
     ];
     if (!window.confirm(lines.join('\n'))) return { ok: false, message: null };
+    if (!this.guardEntry('estate')) return { ok: false, message: null };
     return this.estate.buyHome(propertyId, priceCents, listingVersion);
   }
 
   /** 受让储备土地的确认：出让价、付款账户与结果。 */
   private confirmBuyLand(propertyId: string, priceCents: number): CommandOutcome {
+    if (!this.guardEntry('estate')) return { ok: false, message: null };
     if (!propertyId) return { ok: false, message: null };
     const view = buildEstateView(this.store.state, true);
     const card = view.reserveLand.find((item) => item.id === propertyId);
@@ -829,11 +901,13 @@ export class Game {
       '机构可能随后对你的地块提出限时收购报价，是否接受由你决定。',
     ];
     if (!window.confirm(lines.join('\n'))) return { ok: false, message: null };
+    if (!this.guardEntry('estate')) return { ok: false, message: null };
     return this.estate.buyLand(propertyId, priceCents);
   }
 
   /** 接受土地收购报价的确认：报价金额与到账结果。 */
   private confirmAcceptOffer(offerId: string, priceCents: number): CommandOutcome {
+    if (!this.guardEntry('estate')) return { ok: false, message: null };
     if (!offerId) return { ok: false, message: null };
     const view = buildEstateView(this.store.state, true);
     let matched: { name: string; buyer: string; price: number; expires: string } | null = null;
@@ -867,6 +941,7 @@ export class Game {
       '接受后无法撤销；其他报价会同时失效并释放对方的预留资金。',
     ];
     if (!window.confirm(lines.join('\n'))) return { ok: false, message: null };
+    if (!this.guardEntry('estate')) return { ok: false, message: null };
     return this.estate.acceptOffer(offerId, priceCents);
   }
 
@@ -875,6 +950,7 @@ export class Game {
     shares: number,
     expectedPriceCents: number | null,
   ): CommandOutcome {
+    if (!this.guardEntry('capital')) return { ok: false, message: null };
     if (!companyId) return { ok: false, message: null };
     if (!Number.isSafeInteger(shares) || shares <= 0) {
       this.toast.show('error', '请先输入本次要回购的股数');
@@ -903,6 +979,7 @@ export class Game {
         '回购后无法撤销。',
     );
     if (!confirmed) return { ok: false, message: null };
+    if (!this.guardEntry('capital')) return { ok: false, message: null };
     return this.capital.buyback(companyId, shares, view.buybackPreviewPrice);
   }
 
@@ -987,6 +1064,8 @@ export class Game {
     this.panels.resetPersonalSession();
     this.panels.resetGovernmentSession();
     this.panels.resetShopSession();
+    // 读档不继承旧现场：关闭管理窗口（含其入口上下文），由玩家重新走到设施前打开
+    this.panels.close();
     // 读档顺序固定：先恢复逻辑地图并同步该地图的建筑实例，再恢复原始存档 pose；
     // 世界内部等到最终碰撞就绪后才会「仅在原位置非法时」做一次最小推出。
     this.syncedLayoutRevision = -1;
@@ -995,7 +1074,6 @@ export class Game {
     this.collisionReady = this.world.isCollisionReady();
     this.simAccumulator = 0;
     this.lastFrameMs = 0;
-    if (this.panels.isOpen) this.panels.refresh(buildViewModel(this.store.state));
     this.hud.setTime(dateAtMinute(this.store.state.clock.totalMinute, TIME.calendar));
     this.syncClockUi();
     this.syncPanelPresentation();

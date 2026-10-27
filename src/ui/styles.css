@@ -1597,6 +1597,43 @@ select.field {
   font-weight: 600;
 }
 
+/*
+ * 交易区的买入/卖出切换：同一块表单的两种模式，不新增第二个提交入口，
+ * 也不改变任何成交校验。状态只存在内存里。
+ */
+.sec-switch {
+  display: inline-flex;
+  gap: 3px;
+  margin: 2px 0 10px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--paper-2);
+}
+
+.sec-switch-item {
+  padding: 4px 18px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.sec-switch-item:hover:not(.is-active) {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.sec-switch-item.is-active {
+  background: var(--card);
+  border-color: var(--line-2);
+  color: var(--teal-deep);
+  font-weight: 600;
+  box-shadow: var(--sh-card);
+}
+
 .quote-head {
   display: flex;
   align-items: flex-start;
@@ -1853,27 +1890,6 @@ select.field {
   font-size: 12px;
   color: var(--ink-3);
   opacity: 1;
-}
-
-.stock-card-chart,
-.stock-window-chart {
-  position: relative;
-  margin: 9px 0;
-  height: 92px;
-  border-radius: var(--r-sm);
-  border: 1px solid #2f3d4b;
-  background: var(--chart-bg);
-  overflow: hidden;
-}
-
-.stock-window-chart {
-  height: 172px;
-}
-
-.candle-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
 }
 
 .stock-card-grid {
@@ -2237,6 +2253,17 @@ select.field {
 }
 
 /*
+ * 12 个交叉政治群体的图例较长：宽屏排两列，窄屏回到一列纵排，
+ * 只改排版，不改变扇区角度、数值与提示。
+ */
+.pie-host-dense .pie-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 10px;
+  max-width: 560px;
+}
+
+/*
  * 扇区热区：路径由脚本按扇区角度算出（真实环带，比可见描边更宽）。
  * 命中只取填充区域，且每块几何互不重叠，因此指针落在哪个分类就一定是哪个分类。
  */
@@ -2581,6 +2608,12 @@ select.field {
 
   .pp-grid-2 {
     grid-template-columns: 1fr;
+  }
+
+  /* 窄屏放不下两列图例：回到一行一个，名称与百分比不被截断 */
+  .pie-host-dense .pie-legend {
+    grid-template-columns: 1fr;
+    max-width: none;
   }
 }
 

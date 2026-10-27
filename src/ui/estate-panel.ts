@@ -232,6 +232,42 @@ export function renderEstateBrief(view: EstateSectionView): string {
   `;
 }
 
+/**
+ * 个人资产里的房地产持有明细：只读表格，与住房页共用同一份 `EstateSectionView` 与行渲染。
+ *
+ * 这里刻意不含挂牌输入、买入/受让按钮与报价处理：
+ * 人物界面只查看持有情况与「有没有机构在看」，交易仍在晴川公寓现场办理。
+ */
+export function renderEstateHoldingsTable(view: EstateSectionView): string {
+  if (view.holdings.length === 0) {
+    return `<div class="pp-empty">还没有持有物业。住宅与土地需要在晴川公寓现场购买或受让。</div>`;
+  }
+  const offerText = (card: EstateCardView): string => {
+    if (card.offers.length === 0) return '—';
+    const best = card.offers.reduce((max, offer) =>
+      offer.priceCents > max.priceCents ? offer : max,
+    );
+    return `${card.offers.length} 份 · 最高 ${best.priceText}`;
+  };
+  const rows = view.holdings.map(
+    (card) => `<tr>
+      ${cell(card.name)}
+      ${cell(card.kind === 'land' ? '储备土地' : '住宅')}
+      ${cell(card.layoutText)}
+      ${cell(card.statusText)}
+      ${cell(card.costBasisText, true)}
+      ${cell(card.valuationText, true)}
+      <td class="num ${card.unrealizedPositive ? 'pos' : 'neg'}">${esc(card.unrealizedText)}</td>
+      ${cell(offerText(card), true)}
+    </tr>`,
+  );
+  return table(
+    ['物业', '类别', '户型/面积', '状态', '取得成本', '参考估值', '未实现价差', '机构报价'],
+    rows,
+    '还没有持有物业',
+  );
+}
+
 /** 休息/睡觉入口（只在住宅现场出现），与住房交易同页但互不影响。 */
 export function renderRestBlock(presets: readonly { minutes: number; label: string }[]): string {
   const buttons = presets
