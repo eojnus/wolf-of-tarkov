@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>建筑原型 · 模块化城市建筑</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #0d1116;
+      }
+      #prototype-root {
+        position: fixed;
+        inset: 0;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="prototype-root"></div>
+    <script type="module" src="/src/dev/building-prototype.ts"></script>
+  </body>
+</html>

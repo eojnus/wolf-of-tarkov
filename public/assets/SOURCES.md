@@ -116,6 +116,46 @@ CanvasTexture 在 `src/world/scene.ts` 中程序化生成：
 - 既有 Kenney/Quaternius 资源的原始包围盒实测与等比缩放结果见 `docs/scene-scale.md`；
   本轮未新增或替换任何外部模型/贴图。
 
+## 城市写实化：模块化建筑原型（feature/city-modular-buildings）
+
+本轮为「六层住宅 / 八层现代公寓 / 十层商业办公楼」三种模块化建筑原型引入了第一批写实
+外部资源，全部来自 **Poly Haven**，全部为 **CC0 1.0**（可商用、可修改、可再分发，署名非强制）。
+机器可读清单：`assets/city-realism/manifest.json`（机器可读，含体积、三角面、贴图规格与优化步骤）。
+
+许可依据：<https://polyhaven.com/license> — "All assets … are licensed as CC0 …
+You can use our assets for any purpose … You can redistribute them"。
+
+| 资源 | 类型 | 作者 | 本地文件 | 用途 |
+| --- | --- | --- | --- | --- |
+| Modular Fire Escape（`modular_fire_escape`） | 3D 模型 | Juniix | `city-realism/models/fire-escape-modular.glb` | 住宅阳台金属栏杆；办公楼背面外挂疏散楼梯（平台栏杆 / 楼梯 / 爬梯） |
+| Utility Box 01（`utility_box_01`） | 3D 模型（仅几何） | James Ray Cock | `city-realism/models/utility-box.glb` | 屋顶室外机与入口侧设备箱 |
+| Plastered Wall（`plastered_wall`） | PBR 材质 | Amal Kumar | `city-realism/textures/plaster-wall-*.jpg` | 住宅/公寓主墙面、女儿墙、裙房基座 |
+| Rectangular Facade Tiles（`rectangular_facade_tiles`） | PBR 材质 | Charlotte Baglioni | `city-realism/textures/facade-tiles-*.jpg` | 办公楼标准层外墙板材、公寓深色基座 |
+
+资源页与下载地址：
+
+- 模型页 <https://polyhaven.com/a/modular_fire_escape>、<https://polyhaven.com/a/utility_box_01>；
+  下载使用 1K glTF 包（`https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/<id>/<id>_1k.gltf` + 同目录 `.bin` 与 `textures/`）。
+- 贴图页 <https://polyhaven.com/a/plastered_wall>、<https://polyhaven.com/a/rectangular_facade_tiles>；
+  下载使用 1K JPEG（diffuse / nor_gl / arm 三个通道）。
+
+处理与优化（详见 manifest）：
+
+1. 消防梯只保留实际使用的 4 个构件节点与 01 号 PBR 套（6 张贴图 → 3 张），三角面 11322 → 8086，
+   原始 4.81 MB → 2.51 MB 单文件 GLB（几何与原贴图内嵌）。
+2. 设备箱只保留几何（1.97 MB → 0.14 MB），材质改用项目内金属框架材质，
+   **未使用该资产的贴图**，因此不把它计入 PBR 材质来源。
+3. 两套立面贴图均为原始 1K JPEG，未重采样；ARM 打包图同时驱动粗糙度（G）与金属度（B），
+   省掉独立 rough/metal 两张图。
+4. 场景没有环境贴图（IBL），运行时对 GLB 材质做「金属度 ≤ 0.32、粗糙度 ≥ 0.45」的近似，
+   否则接近纯金属的材质会渲染成黑色。该近似不修改资源文件。
+5. 生产静态资源合计 **6.49 MiB**（8 个文件 = 2 个 GLB + 6 张 1K JPEG），低于本轮 15 MiB 预算；贴图显存估算
+   **48.24 MiB**（9 张 1024² RGBA + mipmap 链，按 宽×高×4×1.34 计），低于 64 MiB 预算。
+
+未采用：`modular_urban_apartments_facade`（27 万三角面、147 个节点、4 套贴图）与
+`street_lamp_01`（3 万三角面、4 张贴图）在本轮预算内性价比不足；`painted_concrete`
+（绿色油漆混凝土）与 `concrete_tile_facade`（过深肋板）与「浅色现代立面」目标不符，已替换。
+
 ## 替换资源时的注意事项
 
 1. 把新的 `.glb` 放进 `public/assets/models/`。
