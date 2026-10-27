@@ -35,6 +35,12 @@ export interface PieOptions {
   readonly colors?: readonly string[];
 }
 
+/**
+ * 环形图配色（按数据顺序取用）。
+ *
+ * 前 8 个是既有分类图（人口阶层、产业）一直在用的颜色，**顺序不能改**；
+ * 后 4 个是给 12 交叉政治群体补的，保证 12 个扇区颜色互不重复。
+ */
 export const PIE_COLORS: readonly string[] = [
   '#2b7c8f',
   '#5b93b8',
@@ -44,6 +50,10 @@ export const PIE_COLORS: readonly string[] = [
   '#c06c5a',
   '#6f8a5a',
   '#a06a86',
+  '#c08a6a',
+  '#8e6f8e',
+  '#6c8fa0',
+  '#9aa46a',
 ];
 
 const R = 46;

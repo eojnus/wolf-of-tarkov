@@ -35,8 +35,9 @@ import {
   renderBusinessTalent,
 } from './business-panel';
 import { icon } from './icons';
-import { renderBank, renderOffice } from './life-panels';
-import { destroyStockCharts, paintStockCharts } from './stock-chart';
+import { renderOffice } from './life-panels';
+import { renderEstateHoldingsTable } from './estate-panel';
+import type { EstateSectionView } from '../app/real-estate-view';
 import { renderInventorySection } from './inventory-panel';
 import {
   patchStockWindowNumbers,
@@ -48,6 +49,9 @@ import { StockWindowManager } from './stock-window-manager';
 
 type CompanySub = 'overview' | 'research' | 'talent' | 'finance' | 'actions' | 'market' | 'capital';
 
+/** 资本子页的两种形态：证券中心的完整资本业务，或人物界面的自有公司治理。 */
+export type CapitalMode = 'full' | 'governance';
+
 type FormControl = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
 const SECTIONS: ReadonlyArray<{ id: PersonalSection; name: string }> = [
@@ -55,8 +59,8 @@ const SECTIONS: ReadonlyArray<{ id: PersonalSection; name: string }> = [
   { id: 'finance', name: '个人财务' },
   { id: 'work', name: '工作情况' },
   { id: 'inventory', name: '背包' },
-  { id: 'stocks', name: '持仓' },
-  { id: 'company', name: '企业经营' },
+  { id: 'stocks', name: '股票持仓' },
+  { id: 'company', name: '我的公司' },
 ];
 
 /** 内容归属者提供的外部依赖：现场办理的上下文、当前游戏视图与分类跳转。 */
@@ -64,6 +68,10 @@ export interface PersonalPanelHost {
   /** 当前窗口是从哪个建筑入口打开的（决定现场办理内容）。 */
   onsite(): string | null;
   view(): GameViewModel | null;
+  /** 远程只读的房地产视图：个人资产里的持有明细从这里取。 */
+  estate(): EstateSectionView;
+  /** 当前入口是否允许进入该栏目（待办与快捷入口同样受此限制）。 */
+  canOpen?(section: PersonalSection): boolean;
   navigate?(section: PersonalSection): void;
 }
 
@@ -243,9 +251,13 @@ export class PersonalPanel {
   private floatEl: HTMLElement | null = null;
   private section: PersonalSection = 'overview';
   private companySub: CompanySub = 'overview';
+  /** 资本子页形态：只有证券中心显示完整资本业务，人物界面只显示治理。 */
+  private capitalMode: CapitalMode = 'full';
   private query: PersonalUiQuery = { ...DEFAULT_PERSONAL_QUERY };
   private readonly windows = new StockWindowManager();
   private lastView: PersonalView | null = null;
+  /** 本次刷新用的房地产只读视图：个人财务的持有明细从这里取，避免同一次绘制重复构建。 */
+  private lastEstate: EstateSectionView | null = null;
   private lastPatch = 0;
   /** 当前栏目的结构指纹；只在真正重建后更新。 */
   private lastSignature = '';
@@ -285,27 +297,29 @@ export class PersonalPanel {
   /** 关闭整个界面：销毁 DOM，但保留浮窗的打开状态与位置。 */
   teardown(): void {
     this.windows.detach();
-    if (this.root) {
-      destroyStockCharts(this.root);
-      this.root.innerHTML = '';
-    }
+    if (this.root) this.root.innerHTML = '';
     this.root = null;
     this.floatEl = null;
   }
 
   /**
-   * 由外层分类导航调用：设置当前栏目与公司子页。
+   * 由外层分类导航调用：设置当前栏目、公司子页与资本子页形态。
    * 这里只切换显示的栏目，不重建导航本身。
    */
-  setScope(section: PersonalSection, sub?: CompanySub): void {
+  setScope(section: PersonalSection, sub?: CompanySub, capitalMode: CapitalMode = 'full'): void {
     if (!this.root) return;
     const nextSub = sub ?? 'overview';
-    if (section === this.section && nextSub === this.companySub) {
+    if (
+      section === this.section &&
+      nextSub === this.companySub &&
+      capitalMode === this.capitalMode
+    ) {
       this.patchNav();
       return;
     }
     this.section = section;
     this.companySub = nextSub;
+    this.capitalMode = capitalMode;
     this.lastSignature = '';
     this.patchNav();
     this.paint(true);
@@ -429,8 +443,6 @@ export class PersonalPanel {
           body: renderStockWindowBody(card),
         });
         this.paintWindows(true);
-        // 新窗口的 canvas 刚插入，需要立刻画一次，否则要等下一次刷新
-        this.paintCharts();
         return true;
       }
       case 'close-stock': {
@@ -527,7 +539,7 @@ export class PersonalPanel {
   /** 只替换回购预览相关的节点，DOM 结构保持不动。 */
   private patchBuybackPreview(): void {
     if (!this.root) return;
-    const view = this.getView(this.query);
+    const view = this.buildView();
     this.lastView = view;
     const cap = view.capital;
     const setText = (name: string, text: string): void => {
@@ -586,10 +598,12 @@ export class PersonalPanel {
 
   /**
    * 栏目跳转统一交给外层：外层的分类导航决定高亮与标题，
-   * 这里只负责在自己的栏目容器之间切换。
+   * 这里只负责在自己的栏目容器之间切换。当前入口没有的栏目直接忽略，
+   * 待办按钮与持仓快捷入口因此不能绕开入口限制。
    */
   private switchSection(next: PersonalSection): void {
     if (next !== this.section) {
+      if (this.host.canOpen && !this.host.canOpen(next)) return;
       this.section = next;
       this.lastSignature = '';
       this.patchNav();
@@ -608,7 +622,7 @@ export class PersonalPanel {
 
   private paint(force: boolean): void {
     if (!this.root) return;
-    const view = this.getView(this.query);
+    const view = this.buildView();
     this.lastView = view;
 
     this.patchNav();
@@ -620,12 +634,37 @@ export class PersonalPanel {
     }
     this.lastPatch = now;
 
+    // 个人财务里要列房地产持有明细：只在需要时构建一次，供指纹与渲染共用
+    this.lastEstate = this.section === 'finance' ? this.host.estate() : null;
     const container = this.activeContainer();
     if (container) this.paintSection(container, view, force);
 
     this.syncWindowVisibility();
     if (this.section === 'stocks') this.paintWindows(force);
-    this.paintCharts();
+  }
+
+  /**
+   * 取视图的唯一入口。
+   *
+   * 治理子页必须绑定**当前管理公司**（CEO 身份，由 `buildBusinessView` 的 `canManage` 表达），
+   * 不能沿用证券中心浏览时写进 `query.capitalCompanyId` 的其它持股公司；
+   * 同时也不能只把查询置空——`buildCapitalView` 在没有管理公司时会回退到「玩家持股的第一家」，
+   * 那同样会把别的公司带进人物界面，所以这里以实际管理公司为准做一次核对。
+   */
+  private buildView(): PersonalView {
+    if (this.capitalMode !== 'governance') return this.getView(this.query);
+    const bound = this.managedCompanyId();
+    const view = this.getView({ ...this.query, capitalCompanyId: bound });
+    const target = view.company.canManage ? view.company.id : null;
+    // 没有管理公司时不在人物界面渲染治理内容（由 renderCompany 给指引），因此无需再取一次
+    if (target === null || view.capital.companyId === target) return view;
+    return this.getView({ ...this.query, capitalCompanyId: target });
+  }
+
+  /** 当前管理公司 id：只有 CEO 身份才算，卖光股份不撤职（由视图的 canManage 表达）。 */
+  private managedCompanyId(): string | null {
+    const company = this.lastView?.company;
+    return company && company.canManage ? company.id : null;
   }
 
   private patchNav(): void {
@@ -676,7 +715,6 @@ export class PersonalPanel {
     const next = template.content.firstElementChild;
     const current = container.firstElementChild;
     if (!next || !current) {
-      destroyStockCharts(container);
       container.innerHTML = html;
       return;
     }
@@ -691,7 +729,6 @@ export class PersonalPanel {
       if (item.open) openDetails.add(index);
     });
 
-    destroyStockCharts(container);
     container.innerHTML = html;
 
     const nextScroller = container.querySelector<HTMLElement>('.pp-scroll');
@@ -737,6 +774,9 @@ export class PersonalPanel {
       case 'finance': {
         const f = view.finance;
         const game = this.host.view();
+        const held = this.lastEstate
+          ? this.lastEstate.holdings.map((item) => `${item.id}:${item.status}`).join(',')
+          : '';
         return [
           'f',
           this.host.onsite() === 'bank' ? 'bank' : '',
@@ -754,6 +794,7 @@ export class PersonalPanel {
           String(f.report?.lines.length ?? 0),
           String(f.incomeLines.length),
           String(f.expenseLines.length),
+          held,
         ].join('|');
       }
       case 'work':
@@ -776,6 +817,7 @@ export class PersonalPanel {
           'c',
           b.hasCompany ? '1' : '0',
           this.companySub,
+          this.capitalMode,
           b.id,
           b.isClosed ? '1' : '0',
           b.hasProject ? '1' : '0',
@@ -821,16 +863,13 @@ export class PersonalPanel {
   }
 
   /**
-   * 现场办理区块：只有从对应建筑入口打开时才追加，
-   * 保证存取款、入职上班不会被分类重排变成远程操作。
+   * 现场办理区块：只有从对应建筑入口打开时才追加。
+   * 银行入口现在有独立页面（存取款与贷款），因此这里只剩办公楼现场。
    */
   private onsiteExtra(): string {
     const game = this.host.view();
     if (!game) return '';
     const onsite = this.host.onsite();
-    if (this.section === 'finance' && onsite === 'bank') {
-      return `<div class="pp-card"><div class="pp-card-title">${icon('banknote', { size: 14 })} 现场办理 · 存取款与贷款</div>${renderBank(game)}</div>`;
-    }
     if (this.section === 'work' && onsite === 'office') {
       return `<div class="pp-card"><div class="pp-card-title">${icon('briefcase', { size: 14 })} 现场办理 · 入职与上班</div>${renderOffice(game)}</div>`;
     }
@@ -918,6 +957,11 @@ export class PersonalPanel {
           ${kpi({ label: '本月净额', valueText: f.monthNetText, tone: f.monthNetPositive ? 'pos' : 'neg' })}
         </div>
         <details class="pp-details"><summary>计算说明</summary><p>${esc(f.formulaText)}</p></details>
+      </div>
+      <div class="pp-card">
+        <div class="pp-card-title">房地产持有明细</div>
+        ${renderEstateHoldingsTable(this.lastEstate ?? this.host.estate())}
+        <div class="pp-hint">持有物业按参考估值计入净资产，永久居住权不计入。买入、挂牌、改价、撤销与机构报价的接受/拒绝都需要在晴川公寓现场办理。</div>
       </div>
       <div class="pp-grid-2">
         <div class="pp-card">
@@ -1012,19 +1056,39 @@ export class PersonalPanel {
       <div class="pp-card">
         <div class="pp-card-title">我的持仓</div>
         ${cards}
-        <div class="pp-hint">本页只做查看，买卖请到「${esc(BRANDING.cityStem)}证券中心」；点击卡片打开可拖动的详情窗。</div>
+        <div class="pp-hint">本页只做查看：持股、成本、市值与盈亏。K 线与买卖都在「${esc(BRANDING.cityStem)}证券中心」；点击卡片打开只读持仓详情窗。</div>
+        <div class="pp-hint">对其他持股公司的股东权利（表决、任免、资本业务）在证券中心「公司与资本」里按公司办理。</div>
       </div>
     </div>`;
   }
 
   private renderCompany(view: PersonalView): string {
     const b = view.company;
+    // 人物界面的治理子页只服务「当前管理公司」，与证券中心浏览过的主体互不影响
+    const governanceOnly = this.companySub === 'capital' && this.capitalMode === 'governance';
 
     let content = '';
-    if (!b.hasCompany) {
-      content = `${renderBusinessCreate(b)}
-        ${renderBusinessMarket(b)}
-        ${this.renderCapital(view.capital)}`;
+    if (governanceOnly) {
+      content = b.canManage
+        ? this.renderCapital(view.capital, 'governance')
+        : `<div class="block">
+            <div class="block-title">公司治理</div>
+            <div class="note">${
+              b.hasCompany
+                ? `你持有「${esc(b.name)}」的股份，但当前不是它的 CEO；这里只显示你管理中的公司。`
+                : '你当前没有管理中的公司（CEO 身份）。'
+            }</div>
+            <div class="note">股东表决、任免与资本业务在「${esc(BRANDING.cityStem)}证券中心 › 公司与资本」里按公司办理；创建公司请到「公司概览」。</div>
+          </div>`;
+    } else if (!b.hasCompany) {
+      // 没有公司时只保留基线已有的创建入口：不把外部融资、上市与回购面板带回这里
+      content =
+        this.host.onsite() === 'securities'
+          ? `<div class="block">
+              <div class="block-title">公司</div>
+              <div class="note">你还没有公司。创建公司与日常经营在人物界面（Tab）的「我的公司」里办理；这里只处理已成立公司的资本业务。</div>
+            </div>`
+          : renderBusinessCreate(b);
     } else {
       switch (this.companySub) {
         case 'overview':
@@ -1064,7 +1128,9 @@ export class PersonalPanel {
                 '还没有企业资金流水',
               )}
             </div>
-            ${renderBusinessActions(b)}`;
+            <div class="block">
+              <div class="note">出资、分红、暂停/恢复经营、清算与「推进到下一事件」在「日常经营」里办理；上市、融资、回购与资本宣传在证券中心办理。</div>
+            </div>`;
           break;
         case 'actions':
           content = renderBusinessActions(b);
@@ -1073,7 +1139,7 @@ export class PersonalPanel {
           content = renderBusinessMarket(b);
           break;
         case 'capital':
-          content = this.renderCapital(view.capital);
+          content = this.renderCapital(view.capital, this.capitalMode);
           break;
         default:
           content = '';
@@ -1083,18 +1149,27 @@ export class PersonalPanel {
     return `<div class="pp-scroll">${content}</div>`;
   }
 
-  private renderCapital(view: CapitalView): string {
+  /**
+   * 资本子页。
+   *
+   * `full`：证券中心「公司与资本」——公司选择、上市、外部融资、报价、回购与资本宣传，外加治理；
+   * `governance`：人物界面「我的公司 › 公司治理」——只保留自有公司的股权、表决与任免，
+   * 资本业务只留一行指引，不在这里保留半套入口。
+   */
+  private renderCapital(view: CapitalView, mode: CapitalMode): string {
     const cap = view;
     const perm = cap.canManage ? '' : 'disabled';
     const propose = cap.canPropose ? '' : 'disabled';
-    const selector = cap.companies.length
-      ? `<div class="pp-subnav">${cap.companies
-          .map(
-            (item) =>
-              `<button type="button" class="pp-subnav-item${item.selected ? ' active' : ''}" data-action="pp-capital-company" data-company="${esc(item.id)}">${esc(item.name)} · ${esc(item.label)}</button>`,
-          )
-          .join('')}</div>`
-      : '';
+    // 公司选择只在证券中心出现：那里才同时覆盖自有公司与其它持股公司
+    const selector =
+      mode === 'full' && cap.companies.length
+        ? `<div class="pp-subnav">${cap.companies
+            .map(
+              (item) =>
+                `<button type="button" class="pp-subnav-item${item.selected ? ' active' : ''}" data-action="pp-capital-company" data-company="${esc(item.id)}">${esc(item.name)} · ${esc(item.label)}</button>`,
+            )
+            .join('')}</div>`
+        : '';
 
     const capRows = cap.capTable
       .map((row) => {
@@ -1182,8 +1257,7 @@ export class PersonalPanel {
           .join('')
       : '';
 
-    return `
-      ${selector}
+    const governance = `
       <div class="pp-card">
         <div class="pp-card-title">股权与治理 · ${esc(cap.companyName || '未选择公司')}</div>
         <div class="pp-hint">${esc(cap.permissionText)}</div>
@@ -1199,7 +1273,9 @@ export class PersonalPanel {
           <button type="button" class="btn btn-sm btn-ghost" data-action="remove-ceo" data-company="${esc(cap.companyId)}" data-holder="${esc(cap.ceoHolderId)}" ${propose && cap.ceoHolderId ? '' : 'disabled'}>罢免现任 CEO</button>
         </div>
         <div class="pp-hint">任免通过表决生效：赞成必须严格超过有效股份的 50%，库存股不投票。首轮最多同时管理一家公司。</div>
-      </div>
+      </div>`;
+
+    const listing = `
       <div class="pp-card">
         <div class="pp-card-title">上市与估值</div>
         <div class="pp-kpi-row">
@@ -1212,7 +1288,9 @@ export class PersonalPanel {
         <div class="actions" style="margin-top:8px">
           <button type="button" class="btn btn-primary" data-action="list-company" ${cap.canList ? '' : 'disabled'}>申请上市</button>
         </div>
-      </div>
+      </div>`;
+
+    const financing = `
       <div class="pp-card">
         <div class="pp-card-title">外部股权融资</div>
         <div class="pp-hint">${esc(cap.financingStatusText)}${cap.cooldownText ? ` · ${esc(cap.cooldownText)}` : ''}</div>
@@ -1221,7 +1299,9 @@ export class PersonalPanel {
           <button type="button" class="btn" data-action="request-financing" ${perm}>发起融资</button>
         </div>
         ${cap.quotes.length ? `${quoteRows}<div class="actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-ghost" data-action="reject-quotes" ${perm}>拒绝全部报价</button></div>` : '<div class="pp-empty">当前没有待接受的报价</div>'}
-      </div>
+      </div>`;
+
+    const buyback = `
       <div class="pp-card">
         <div class="pp-card-title">回购与宣传</div>
         <div class="pp-hint">参考上限（不是本次数量）：${esc(cap.buybackMaxText)}。${esc(cap.buybackNote)}</div>
@@ -1242,19 +1322,33 @@ export class PersonalPanel {
           <button type="button" class="btn btn-sm" data-action="promote" ${perm}>宣传</button>
         </div>
         <div class="pp-hint">${esc(cap.promotionText)} · 固定失败率 ${esc(cap.limits.failRateText)}，失败也支付费用</div>
-      </div>
+      </div>`;
+
+    const proposalsBlock = `
       <div class="pp-card">
         <div class="pp-card-title">董事会提案</div>
         ${cap.openProposalText ? `<div class="pp-hint warn">${esc(cap.openProposalText)}</div>` : ''}
         ${proposals}
         <div class="pp-hint">外部股东提案有 ${cap.limits.voteWindowDays} 个游戏日的表决窗口；你不投票按弃权处理，系统不会把你的股份自动算成赞成。</div>
-      </div>
-      ${
-        passive
-          ? `<div class="pp-card"><div class="pp-card-title">其他持股</div><div class="pp-rows">${passive}</div></div>`
-          : ''
-      }
-    `;
+      </div>`;
+
+    const passiveBlock = passive
+      ? `<div class="pp-card"><div class="pp-card-title">其他持股</div><div class="pp-rows">${passive}</div></div>`
+      : '';
+
+    if (mode === 'governance') {
+      return `
+        <div class="pp-card">
+          <div class="pp-card-title">资本业务入口</div>
+          <div class="pp-hint">上市、外部融资、接受投资报价、股份回购与公司资本宣传在「${esc(BRANDING.cityStem)}证券中心 › 公司与资本」办理；产品营销预算仍在「产品与研发」里。</div>
+        </div>
+        ${governance}
+        ${proposalsBlock}
+        ${passiveBlock}
+      `;
+    }
+
+    return `${selector}${governance}${listing}${financing}${buyback}${proposalsBlock}${passiveBlock}`;
   }
 
   private syncWindowVisibility(): void {
@@ -1293,19 +1387,5 @@ export class PersonalPanel {
       });
     }
     if (force) this.windows.layout();
-  }
-
-  /** 只重绘当前栏目与可见浮窗，不碰隐藏栏目的图表。 */
-  private paintCharts(): void {
-    if (!this.root || !this.lastView) return;
-    const view = this.lastView;
-    const lookup = (id: string) => {
-      const card = view.stocks.cards.find((item) => item.id === id);
-      if (!card) return null;
-      return { closed: card.candles, current: card.current };
-    };
-    const container = this.activeContainer();
-    if (container) paintStockCharts(container, lookup);
-    if (this.floatEl) paintStockCharts(this.floatEl, lookup);
   }
 }

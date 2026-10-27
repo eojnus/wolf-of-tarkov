@@ -85,6 +85,7 @@ function kv(label: string, value: string, live?: string): string {
 
 export class GovernmentPanel {
   private readonly populationPie = new DonutPie();
+  private readonly politicsPie = new DonutPie();
   private readonly industryPie = new DonutPie();
   /** 赞助草稿：候选人 id → 输入文本（只存在内存）。 */
   private drafts: Record<string, string> = {};
@@ -129,6 +130,20 @@ export class GovernmentPanel {
           label: '总人口',
           value: view.population.totalText,
           sub: view.population.growthRateText,
+        },
+      });
+    }
+
+    const politicsHost = root.querySelector<HTMLElement>('[data-el="gov-politics-pie"]');
+    if (politicsHost) {
+      this.politicsPie.mount(politicsHost);
+      this.politicsPie.update(politicsPieData(view), {
+        ariaLabel: '城市人口按 12 个政治群体分布',
+        unit: '',
+        center: {
+          label: '城市人口',
+          value: view.population.totalText,
+          sub: '12 个互斥群体',
         },
       });
     }
@@ -356,15 +371,6 @@ export class GovernmentPanel {
         </tr>`,
       )
       .join('');
-    const flowRows = pop.flows
-      .map(
-        (row) => `
-        <tr>
-          <td>${esc(row.label)}</td>
-          <td class="num">${esc(row.peopleText)}</td>
-        </tr>`,
-      )
-      .join('');
     return `
       <div class="block">
         <div class="block-title">城市人口</div>
@@ -386,25 +392,6 @@ export class GovernmentPanel {
           <thead><tr><th>经济阶层</th><th>人数</th><th>占比</th></tr></thead>
           <tbody>${classRows}</tbody>
         </table>
-      </div>
-
-      <div class="block">
-        <div class="block-title">本月结算（已结算）</div>
-        <div class="kv-list">
-          ${kv('自然增长', pop.growthText)}
-          ${kv('阶层流动合计', pop.flowTotalText)}
-          ${kv('总人口变化', pop.netText)}
-          ${kv('经营影响（J/I/P）', pop.businessText)}
-          ${kv('股市影响', pop.marketText)}
-          ${kv('市场月回报', pop.marketReturnText)}
-          ${kv('涨跌覆盖比例', pop.marketCoverageText)}
-        </div>
-        <table class="gov-table">
-          <thead><tr><th>月度转移</th><th>人数</th></tr></thead>
-          <tbody>${flowRows || '<tr><td colspan="2">尚无已结算记录</td></tr>'}</tbody>
-        </table>
-        <div class="note">${esc(pop.sampleNote)}</div>
-        ${pop.incompleteNote ? `<div class="note warn">${esc(pop.incompleteNote)}</div>` : ''}
       </div>
 
       <div class="block">
@@ -456,6 +443,8 @@ export class GovernmentPanel {
             <div class="stat-note">${esc(politics.protectionText)}</div>
           </div>
         </div>
+        <div data-el="gov-politics-pie" data-preserve="gov-politics-pie" class="pie-host-dense"></div>
+        <div class="note">环形图只用这 12 个互斥群体：扇区面积来自同一份人数比例，合计等于城市人口。收入边际与利益边际是各自覆盖全人口的统计，不能与 12 群体相加。</div>
         <table class="gov-table">
           <thead>
             <tr><th>群体</th><th>人数</th><th>占比</th><th>参与倾向</th><th>满意度</th><th>群体内支持率</th></tr>
@@ -473,12 +462,6 @@ export class GovernmentPanel {
         </table>
         <div class="note">${esc(politics.earlyElectionNote)}</div>
         <div class="note">提前选举不会因不同群体轮流不满而累计成同一个「三个月」：每个主要群体有独立计数器。</div>
-      </div>
-      <div class="block">
-        <div class="block-title">群体画像</div>
-        ${politics.groups
-          .map((row) => `<div class="note">${esc(row.name)}：${esc(row.note)}</div>`)
-          .join('')}
       </div>
     `;
   }
@@ -681,8 +664,9 @@ export class GovernmentPanel {
 
   /**
    * 城市经济栏目：GDP 三部分、实时待结算、股市指数与调整值、月度趋势、
-   * 产业经营产出占比、人口与政治概览、可模拟企业样本、建设阶段与逻辑地图。
-   * 只消费 `CityEconomyPanelView`，不自己计算任何数值。
+   * 产业经营产出占比、人口与政治概览。
+   * 只消费 `CityEconomyPanelView`，不自己计算任何数值；
+   * 企业样本统计与内部区域结构不在玩家界面展示。
    */
   private renderEconomy(): string {
     const city = this.cityView();
@@ -770,26 +754,13 @@ export class GovernmentPanel {
         <div class="note">${esc(city.population.note)}</div>
       </div>
 
-      <div class="block">
-        <div class="block-title">可模拟企业样本（统计覆盖范围有限）</div>
-        <div class="kv-list">
-          ${kv('企业数量', city.sample.companyCountText)}
-          ${kv('在营/暂停/危机', city.sample.activeCompanyCountText)}
-          ${kv('企业应付合计', city.sample.payablesText)}
-          ${kv('就业指标 J（还原尺度）', city.sample.jText)}
-          ${kv('产业指标 I（还原尺度）', city.sample.iText)}
-          ${kv('经营压力 P（还原尺度）', city.sample.pText)}
-          ${kv('科研高管任职', city.sample.employmentText)}
-        </div>
-        <div class="note warn">${esc(city.sample.note)}</div>
-      </div>
-
     `;
   }
 
   /**
-   * 建设与城区栏目：门槛、项目、落成历史与逻辑地图。
-   * 只消费 `CityEconomyPanelView` 的 development / territory 两部分。
+   * 建设与城区栏目：门槛、项目与落成历史。
+   * 只消费 `CityEconomyPanelView` 的 development 部分；
+   * 逻辑地图的边界、地块与建筑 id 属于内部结构，不在玩家界面展示。
    */
   private renderDevelopment(): string {
     const city = this.cityView();
@@ -812,17 +783,6 @@ export class GovernmentPanel {
           <td>${esc(row.districtText)}</td>
           <td>${esc(row.directionText)}</td>
           <td class="num">${esc(row.completedText)}</td>
-        </tr>`,
-      )
-      .join('');
-    const districtRows = city.territory.districts
-      .map(
-        (row) => `
-        <tr>
-          <td>${esc(row.name)}</td>
-          <td>${esc(row.directionText)}</td>
-          <td class="num">${esc(row.completedText)}</td>
-          <td class="num">${esc(row.buildingCountText)}</td>
         </tr>`,
       )
       .join('');
@@ -851,21 +811,6 @@ export class GovernmentPanel {
         </table>
         <div class="note">${esc(city.development.note)}</div>
       </div>
-
-      <div class="block">
-        <div class="block-title">逻辑城区</div>
-        <div class="kv-list">
-          ${kv('地图边界', city.territory.boundsText)}
-          ${kv('建筑总数', city.territory.buildingCountText)}
-          ${kv('可购物建筑', city.territory.shopCountText)}
-          ${kv('绑定真实企业的建筑', city.territory.companyBuildingCountText)}
-        </div>
-        <table class="gov-table">
-          <thead><tr><th>城区</th><th>方向</th><th>完成</th><th>建筑</th></tr></thead>
-          <tbody>${districtRows}</tbody>
-        </table>
-        <div class="note">${esc(city.territory.note)}</div>
-      </div>
     `;
   }
 }
@@ -876,6 +821,23 @@ function populationPieData(view: GovernmentPanelView): PieDatum[] {
     id: row.name,
     label: row.name,
     value: row.people,
+    valueText: row.peopleText,
+    ratio: row.ratio,
+  }));
+}
+
+/**
+ * 12 个交叉政治群体 → 环形图数据。
+ *
+ * `value` 用视图给的 `ratio`（同一份人数比例，合计为 1），因此扇区面积与
+ * 表格里的占比是同一个口径；不从已取整的显示文本反算，也不把收入/利益边际混进来。
+ * 人数为 0 的群体得到零长度扇区，图例仍保留一行，便于说明「该群体当前为 0 人」。
+ */
+function politicsPieData(view: GovernmentPanelView): PieDatum[] {
+  return view.politics.groups.map((row) => ({
+    id: row.id,
+    label: row.name,
+    value: row.ratio,
     valueText: row.peopleText,
     ratio: row.ratio,
   }));

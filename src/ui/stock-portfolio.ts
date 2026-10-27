@@ -47,7 +47,7 @@ export function renderStockSummary(view: StocksSectionView): string {
       ${kpi('总浮动盈亏', `${view.totalPnlText}（${view.totalPnlPctText}）`, toneClass(view.totalPnlPositive))}
       ${kpi('累计已实现盈亏', view.realizedText, toneClass(view.realizedPositive))}
     </div>
-    <div class="pp-hint">${esc(view.spanText)}；K 线按每 120 游戏分钟一根聚合。</div>
+    <div class="pp-hint">${esc(view.spanText)}。本页不含 K 线与买卖入口，行情与交易在证券中心。</div>
   </div>`;
 }
 
@@ -64,17 +64,13 @@ export function renderStockCard(card: StockCardView): string {
         <div class="stock-card-change">${esc(card.statusText)}</div>
       </div>
     </header>
-    <div class="stock-card-chart">
-      <canvas class="candle-canvas" data-chart="card" data-stock="${esc(card.id)}"></canvas>
-      <span class="chart-empty" data-chart-empty="${esc(card.id)}">正在积累行情</span>
-    </div>
     <div class="stock-card-grid">
       <div><span>持股</span><b class="num">${esc(card.sharesText)}</b></div>
       <div><span>平均成本</span><b class="num">${esc(card.avgCostText)}</b></div>
       <div><span>持仓市值</span><b class="num">${esc(card.valueText)}</b></div>
       <div><span>浮动盈亏</span><b class="num ${toneClass(card.pnlPositive)}">${esc(card.pnlText)}（${esc(card.pnlPctText)}）</b></div>
     </div>
-    <div class="stock-card-foot">${esc(card.statusText)} · 点击查看详情</div>
+    <div class="stock-card-foot">${esc(card.statusText)} · 点击查看只读持仓详情</div>
   </article>`;
 }
 
@@ -136,10 +132,6 @@ export function patchStockWindowNumbers(scope: ParentNode, card: StockCardView):
 /** 浮动详情窗正文。窗口外壳由 stock-window-manager 负责。 */
 export function renderStockWindowBody(card: StockCardView): string {
   return `
-    <div class="stock-window-chart">
-      <canvas class="candle-canvas" data-chart="window" data-stock="${esc(card.id)}"></canvas>
-      <span class="chart-empty" data-chart-empty="${esc(card.id)}">正在积累行情</span>
-    </div>
     <div class="stock-window-price">
       <span class="num ${card.direction === 'up' ? 'up' : card.direction === 'down' ? 'down' : ''}" data-wf="price">${esc(card.priceText)}</span>
       <span class="num ${card.direction === 'up' ? 'up' : card.direction === 'down' ? 'down' : ''}" data-wf="change">${esc(card.changeText)} · ${esc(card.changePctText)}</span>
