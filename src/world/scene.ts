@@ -49,15 +49,19 @@ export type BuildingVisualState = 'pending' | 'ready' | 'placeholder';
 
 export interface BuildingHandle {
   /**
-   * 布局建筑快照。几何不变而业务字段（交互 id / shopId / companyId / 可用性）变化时，
-   * 场景保留实例并更新该引用；几何变化则整个 handle 被替换。
+   * 布局建筑快照。几何不变而业务字段（交互 id / shopId / companyId / 可用性 / 名称）变化时，
+   * 场景保留实例并更新该引用；几何（含商店招牌文字）变化则整个 handle 被替换。
    */
   building: LayoutBuilding;
   readonly collider: Collider;
   readonly group: THREE.Group;
   /** 程序化占位外观（含门前广场、旧便利店内景）。挂上新楼体后隐藏，失败时保留。 */
   readonly placeholder: THREE.Group;
-  readonly label: THREE.Sprite;
+  /**
+   * 标签精灵。名称 / 副标题 / 可用性变化时**就地换一张**（旧精灵的材质与画布贴图随即释放），
+   * 楼体、碰撞盒与 visual 都不动。
+   */
+  label: THREE.Sprite;
   /** 仅内存：当前挂载的模块化楼体；null 表示加载中或已降级。 */
   visual: BuildingVisual | null;
   /** 仅内存：当前 visual 的视觉指纹；与请求指纹不一致的结果一律丢弃。 */
@@ -172,6 +176,27 @@ function makeBuildingLabel(building: LayoutBuilding): THREE.Sprite {
   sprite.scale.set(8.4, 2.6, 1);
   sprite.renderOrder = 20;
   return sprite;
+}
+
+/** 释放标签精灵独有的材质与画布贴图（标签不共享，换一张就要清掉旧的）。 */
+function disposeLabel(label: THREE.Sprite): void {
+  label.material.map?.dispose();
+  label.material.dispose();
+}
+
+/**
+ * 就地刷新标签：名称 / 副标题 / 可用性变化时只换这一张精灵。
+ *
+ * 楼体、`visual`、`collider` 对象与楼层高度都不动；新精灵沿用旧精灵的世界位置，
+ * 因此「挂上楼体后抬到 envelope.maxY + 2.6」的结果不会被这次刷新改回去。
+ */
+function refreshBuildingLabel(handle: BuildingHandle): void {
+  const next = makeBuildingLabel(handle.building);
+  next.position.copy(handle.label.position);
+  handle.group.remove(handle.label);
+  disposeLabel(handle.label);
+  handle.label = next;
+  handle.group.add(next);
 }
 
 /* -------------------------------------------------------------- 便利店 */
@@ -799,8 +824,14 @@ function buildTrees(): THREE.Group {
 
 /* ------------------------------------------------------------------ 场景 */
 
-/** 建筑几何指纹：位置/尺寸/外观/模型变了才重建实例；交互 id 等业务字段不重建。 */
-function buildingVisualKey(building: LayoutBuilding): string {
+/**
+ * 楼体几何指纹：只有会改变**楼体几何与材质**的输入才重建实例。
+ *
+ * 位置、尺寸、入口朝向、kind、占位配色、旧模型字段，外加**商店名称**——
+ * 商店名称是新楼体的门头招牌文字，属于真实视觉输入；改名必须重挂楼体（连带占位里的旧招牌）。
+ * 交互 id、shopId、companyId、可用性、非商店的名称/副标题都不在这里：那些只刷新标签。
+ */
+function buildingGeometryKey(building: LayoutBuilding): string {
   return [
     building.position.x,
     building.position.z,
@@ -813,10 +844,14 @@ function buildingVisualKey(building: LayoutBuilding): string {
     building.color,
     building.model ?? '',
     building.modelScaleKey ?? '',
-    building.name,
-    building.subtitle,
-    building.available ? 1 : 0,
+    // 招牌文字只对商店有意义；其他设施改名不影响楼体
+    building.kind === 'shop' ? building.name : '',
   ].join('|');
+}
+
+/** 标签指纹：名称 / 副标题 / 可用性变了就地换标签，不动楼体与碰撞。 */
+function buildingLabelKey(building: LayoutBuilding): string {
+  return [building.name, building.subtitle, building.available ? 1 : 0].join('|');
 }
 
 interface RoadHandle {
@@ -831,7 +866,7 @@ class CitySceneImpl implements CityScene {
   private readonly roadsGroup = new THREE.Group();
   private readonly buildingHandles = new Map<
     string,
-    { readonly handle: BuildingHandle; readonly key: string }
+    { readonly handle: BuildingHandle; readonly key: string; labelKey: string }
   >();
   private readonly roadHandles = new Map<string, RoadHandle>();
   private currentBuildings: BuildingHandle[] = [];
@@ -914,11 +949,17 @@ class CitySceneImpl implements CityScene {
 
     const ordered: BuildingHandle[] = [];
     for (const building of buildings) {
-      const key = buildingVisualKey(building);
+      const key = buildingGeometryKey(building);
+      const labelKey = buildingLabelKey(building);
       const existing = this.buildingHandles.get(building.id);
       if (existing && existing.key === key) {
-        // 几何不变：只刷新业务字段（interactionId / shopId / companyId / available 等）。
+        // 几何不变：保留 handle、visual 与 collider 引用，只更新业务字段
+        // （interactionId / shopId / companyId 等），标签内容变了就换一张精灵。
         existing.handle.building = building;
+        if (existing.labelKey !== labelKey) {
+          refreshBuildingLabel(existing.handle);
+          existing.labelKey = labelKey;
+        }
         ordered.push(existing.handle);
         continue;
       }
@@ -929,7 +970,7 @@ class CitySceneImpl implements CityScene {
       }
       const handle = buildBuilding(building);
       this.buildingsGroup.add(handle.group);
-      this.buildingHandles.set(building.id, { handle, key });
+      this.buildingHandles.set(building.id, { handle, key, labelKey });
       ordered.push(handle);
     }
     this.currentBuildings = ordered;

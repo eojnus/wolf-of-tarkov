@@ -267,6 +267,54 @@ CityLayoutView（只读）+ 所属城区 templateVersion
 | `docs/city-buildings-shots/09-integration-base-city.png` | 生产构建 + 正常游戏入口：晴川公寓（板式住宅、金属栏杆阳台）与市政厅（市政风格）为新楼体，标签正常 |
 | `docs/city-buildings-shots/10-integration-expansion-lowrise.png` | 夹具经正式 `World.syncLayout`：住房新区 5 m 社区服务用房（单层、无屋顶设备）+ 14 m 住宅 + 科技新区办公楼风格（含 −90° 朝向的科创服务中心） |
 
+## 9. 验收反馈的 P2 修正（2026-10-28）
+
+本轮验收（HEAD `42f184e`）判定主体接入成立，提出两项 P2。修正只动同步判定与场景复用判定，
+未改布局、存档、媒体资源、种子口径与业务切片。
+
+### 9.1 B1 · 布局总指纹漏掉城区模板版本
+
+- 位置：`src/world/world.ts#layoutFingerprint`。
+- 问题：内层 `visualFingerprint` 含模板版本，但外层结构指纹不含 `districts` 与
+  `building.districtId`；一份「几何、revision 相同、只有城区模板版本不同」的布局会在
+  `syncLayout` 的提前返回处被丢掉，继续显示旧种子的楼体。
+- 修正：结构指纹加入 `district.id + district.templateVersion` 序列，以及每栋楼的 `districtId`。
+  种子仍只来自「建筑 id + 所属城区模板版本 + 规则版本」，与 `layout.revision` 保持分离。
+- 复核（正式 `World.syncLayout` 路径，一次性夹具，跑完删除）：
+
+| 步骤 | 期望 | 实测 |
+| --- | --- | --- |
+| 基础布局就绪 | 6 栋 ready | `ready=6, pending=0` |
+| 只把 `district-base.templateVersion` 1→2 后同步 | 必须检出并重新请求 | **`ready=0, pending=6`**（修正前会是 `ready=6, pending=0`） |
+| 等就绪 | 6 栋 ready | `ready=6, pending=0` |
+| 同内容再同步一次 | 幂等、不重建 | `ready=6, pending=0`（无 detach、无重新请求） |
+
+### 9.2 B2 · 可用状态进入场景几何 key，导致整栋重建
+
+- 位置：`src/world/scene.ts#buildingVisualKey` → 拆成 `buildingGeometryKey` 与 `buildingLabelKey`。
+- 问题：场景 key 含 `available` / `name` / `subtitle`，会在适配器的视觉指纹生效之前先释放
+  handle 与 visual，业务字段变化因此没能复用楼体。
+- 修正：
+  - 几何键 = 位置、尺寸、入口、kind、占位配色、旧模型字段 + **商店名称**（门头招牌文字）；
+  - 标签键 = 名称、副标题、可用性；变化时就地换一张标签精灵，并释放旧精灵的材质与画布贴图；
+  - `handle`、`visual`、`collider` 三者引用保持不变，标签位置沿用当前世界位置
+    （不会把「抬到 `envelope.maxY + 2.6`」改回去）。
+- 复核（`buildCityScene` + 真实工厂产物 + 真实 `attachBuildingVisual`，一次性夹具，跑完删除）：
+
+| 场景 | 断言 | 实测 |
+| --- | --- | --- |
+| 只切换 `available` | handle / collider / visual 引用不变、visual 仍挂载、标签换新且位置不变、旧标签贴图被释放 | 全部 `true` |
+| 非商店改名（`home` → 「晴川公寓（改名）」） | 保留 handle 与 visual，只换标签 | `sameHandle/sameVisual/labelReplaced/nameUpdated` 全 `true` |
+| 商店改名（招牌文字变化） | handle 重建、旧 visual 摘下由 World 重新请求（新招牌） | `handleReplaced=true, visualDropped=true` |
+| 只改 `companyId`（招商） | 保留 handle 与 visual | `sameHandle/sameVisual/companyUpdated` 全 `true` |
+
+### 9.3 修正后的构建与冒烟
+
+- `npm run build`：通过（131 modules，`dist/bundle/index-*.js` 1,303.15 kB / gzip 366.17 kB）。
+- 生产构建启动冒烟（一次页面加载，不重跑几何/并发/取消验证）：进入游戏正常、无 pageerror、
+  旧整栋 GLB 请求仍为 0、city-realism 资源正常加载；唯一 404 仍是 `favicon.ico`。
+- 未重跑：整套几何/包络、并发构件归属、取消/过期、加载中销毁、性能与多浏览器项。
+
 ## 10. 提交
 
 - 分支 `feature/city-building-integration`，提交 `7dd1be8`（父提交 `dc61c09`）。

@@ -101,12 +101,22 @@ function rayBoxDistance(
   return tMin > 0.05 ? tMin : null;
 }
 
-/** 布局结构指纹：用于判断是否需要真正同步（存档 revision 可在不同存档间重复）。 */
+/**
+ * 布局结构指纹：用于判断是否需要真正同步（存档 revision 可在不同存档间重复）。
+ *
+ * 除了几何与业务绑定，这里**必须**包含「建筑所属城区」与「该城区的已存模板版本」：
+ * 它们是楼体外观的种子输入，若只靠内层 `visualFingerprint` 判断，一份几何与 revision
+ * 都相同、只有城区模板版本不同的布局会在提前返回处被丢掉，导致继续显示旧种子的楼体。
+ */
 function layoutFingerprint(layout: CityLayoutView): string {
+  const districts = layout.districts
+    .map((district) => [district.id, district.templateVersion].join(','))
+    .join('|');
   const buildings = layout.buildings
     .map((building) =>
       [
         building.id,
+        building.districtId,
         building.position.x,
         building.position.z,
         building.size.width,
@@ -139,6 +149,7 @@ function layoutFingerprint(layout: CityLayoutView): string {
     layout.bounds.maxX,
     layout.bounds.minZ,
     layout.bounds.maxZ,
+    districts,
     buildings,
     roads,
   ].join('#');
