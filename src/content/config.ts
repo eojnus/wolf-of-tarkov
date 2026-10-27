@@ -318,6 +318,335 @@ export const PLAYER = {
   },
 } as const;
 
+/* ------------------------------------------------------------------ 环境 */
+
+/**
+ * 天气种类 —— 首版只有四种：晴、阴、雨、大雾。
+ *
+ * 枚举放在 content（与 `BuildingKind` 同处）而不是业务模块里，配置表与读档校验
+ * 都以它为准，不出现第二份种类清单。
+ */
+export type WeatherKind = 'clear' | 'cloudy' | 'rain' | 'fog';
+
+/** 阴影质量档：关闭 / 低 / 中 / 高。全局一份，不提供设置界面。 */
+export type ShadowQuality = 'off' | 'low' | 'medium' | 'high';
+
+/**
+ * 昼夜颜色关键帧（按 `minuteOfDay` 线性插值）。
+ *
+ * 关键帧只描述「这段时间看起来是什么颜色、直接光多强」，太阳高度与方向由游戏分钟
+ * 单独解算；`at: 0` 与 `at: 1440` 必须给出相同数值以闭合一天的循环。
+ */
+export interface SkyKeyframe {
+  readonly at: number;
+  readonly skyTop: number;
+  readonly skyHorizon: number;
+  readonly skyGround: number;
+  readonly sunColor: number;
+  readonly sunIntensity: number;
+  readonly hemiSky: number;
+  readonly hemiGround: number;
+  readonly hemiIntensity: number;
+  readonly ambientIntensity: number;
+  readonly fogColor: number;
+  readonly starOpacity: number;
+}
+
+/** 单个天气对昼夜基准的修饰量；天气不复制整套光照预设。 */
+export interface WeatherProfile {
+  /** 0 = 保持昼夜基准色，1 = 完全变成阴天灰调。 */
+  readonly greyness: number;
+  readonly sunMultiplier: number;
+  readonly rainAmount: number;
+  readonly hemiMultiplier: number;
+  readonly ambientBonus: number;
+  readonly starMultiplier: number;
+  readonly fogNearScale: number;
+  readonly fogFarScale: number;
+}
+
+/**
+ * 环境系统参数 —— 昼夜曲线、天气调度、阴影预算与雨量上限。
+ *
+ * **世界坐标方位约定（全项目唯一，新增环境逻辑不得另立一套）**：
+ * `+X = 东`、`−X = 西`、`+Z = 南`、`−Z = 北`。
+ * 太阳从 +X 升起、正午在 +Z 一侧的高处、从 −X 落下；阴影因此朝 −Z（北）与东西两侧拉长。
+ * 基础城区沿用既有坐标（住宅在西北、市政厅在北、便利店在南），不需要改任何布局。
+ *
+ * 昼夜是**连续插值**而不是开关：太阳高度由游戏分钟解算（日出 06:00 / 日落 18:00，
+ * 由余弦曲线对称给出），颜色与强度由 `skyKeyframes` 插值；天气只在昼夜基准上做修饰。
+ */
+export const ENVIRONMENT = {
+  sun: {
+    /** 正午太阳高度角（弧度，约 60°）。 */
+    maxElevationRad: 1.05,
+    /** 太阳低于该高度角时直接光完全消失（弧度），避免地平线以下仍在照射。 */
+    horizonFadeRad: 0.16,
+    /** 方向光相对焦点的距离（米）。阴影相机只覆盖焦点附近的有界区域。 */
+    lightDistance: 90,
+  },
+  sky: {
+    /** 天空穹顶半径（米）：必须小于 `CAMERA.far`，并大于城市可见范围。 */
+    radius: 190,
+    segmentsX: 32,
+    segmentsY: 16,
+    /** 太阳光晕贴片的世界尺寸（米）与不透明度上限。 */
+    glowSize: 24,
+    glowOpacity: 0.5,
+    /** 顶点色重算阈值：任一通道变化小于该值时不重传颜色缓冲。 */
+    colorEpsilon: 0.004,
+  },
+  stars: {
+    count: 900,
+    radius: 172,
+    size: 1.7,
+    color: 0xe4ecff,
+  },
+  /**
+   * 昼夜关键帧。夜间保留足够的环境光让人物、道路与建筑可辨，
+   * 但直接光为 0（不产生月光投影）。
+   */
+  skyKeyframes: [
+    {
+      at: 0,
+      skyTop: 0x0a1424,
+      skyHorizon: 0x18222f,
+      skyGround: 0x0c1218,
+      sunColor: 0x8fa8cc,
+      sunIntensity: 0,
+      hemiSky: 0x2b3d57,
+      hemiGround: 0x161b20,
+      hemiIntensity: 0.34,
+      ambientIntensity: 0.17,
+      fogColor: 0x141d27,
+      starOpacity: 1,
+    },
+    {
+      at: 300,
+      skyTop: 0x0a1424,
+      skyHorizon: 0x18222f,
+      skyGround: 0x0c1218,
+      sunColor: 0x8fa8cc,
+      sunIntensity: 0,
+      hemiSky: 0x2b3d57,
+      hemiGround: 0x161b20,
+      hemiIntensity: 0.34,
+      ambientIntensity: 0.17,
+      fogColor: 0x141d27,
+      starOpacity: 1,
+    },
+    {
+      at: 378,
+      skyTop: 0x2d4463,
+      skyHorizon: 0xc98a5c,
+      skyGround: 0x2a2724,
+      sunColor: 0xffb27a,
+      sunIntensity: 0.45,
+      hemiSky: 0x54607a,
+      hemiGround: 0x2a2a26,
+      hemiIntensity: 0.52,
+      ambientIntensity: 0.16,
+      fogColor: 0x7d6b60,
+      starOpacity: 0.35,
+    },
+    {
+      at: 480,
+      skyTop: 0x5486bd,
+      skyHorizon: 0xd3dde4,
+      skyGround: 0x6e7b68,
+      sunColor: 0xfff1dc,
+      sunIntensity: 1.45,
+      hemiSky: 0xbcd4ea,
+      hemiGround: 0x6d7560,
+      hemiIntensity: 1,
+      ambientIntensity: 0.16,
+      fogColor: 0xa9bccc,
+      starOpacity: 0,
+    },
+    {
+      at: 720,
+      skyTop: 0x4a86c9,
+      skyHorizon: 0xdae4ea,
+      skyGround: 0x7b8671,
+      sunColor: 0xfff8ec,
+      sunIntensity: 1.6,
+      hemiSky: 0xc6dcf0,
+      hemiGround: 0x74795f,
+      hemiIntensity: 1.1,
+      ambientIntensity: 0.15,
+      fogColor: 0xb6c8d6,
+      starOpacity: 0,
+    },
+    {
+      at: 990,
+      skyTop: 0x5386bb,
+      skyHorizon: 0xd6dcd8,
+      skyGround: 0x767f66,
+      sunColor: 0xfff2dd,
+      sunIntensity: 1.4,
+      hemiSky: 0xbed3e6,
+      hemiGround: 0x6f7458,
+      hemiIntensity: 0.95,
+      ambientIntensity: 0.15,
+      fogColor: 0xafc0c9,
+      starOpacity: 0,
+    },
+    {
+      at: 1095,
+      skyTop: 0x36415f,
+      skyHorizon: 0xe0894e,
+      skyGround: 0x3b3330,
+      sunColor: 0xff9a55,
+      sunIntensity: 0.55,
+      hemiSky: 0x6b5a63,
+      hemiGround: 0x33302c,
+      hemiIntensity: 0.55,
+      ambientIntensity: 0.16,
+      fogColor: 0x8b7266,
+      starOpacity: 0.3,
+    },
+    {
+      at: 1185,
+      skyTop: 0x0a1424,
+      skyHorizon: 0x18222f,
+      skyGround: 0x0c1218,
+      sunColor: 0x8fa8cc,
+      sunIntensity: 0,
+      hemiSky: 0x2b3d57,
+      hemiGround: 0x161b20,
+      hemiIntensity: 0.34,
+      ambientIntensity: 0.17,
+      fogColor: 0x141d27,
+      starOpacity: 1,
+    },
+    {
+      at: 1440,
+      skyTop: 0x0a1424,
+      skyHorizon: 0x18222f,
+      skyGround: 0x0c1218,
+      sunColor: 0x8fa8cc,
+      sunIntensity: 0,
+      hemiSky: 0x2b3d57,
+      hemiGround: 0x161b20,
+      hemiIntensity: 0.34,
+      ambientIntensity: 0.17,
+      fogColor: 0x141d27,
+      starOpacity: 1,
+    },
+  ] as readonly SkyKeyframe[],
+  weather: {
+    /**
+     * 天气切换的过渡时长（游戏分钟）；过渡期间新旧两种天气按进度插值。
+     * 必须明显短于最短的天气持续时长（180 分钟），否则天气几乎到不了完全体。
+     */
+    transitionMinutes: 90,
+    /** 开局与新档使用的天气，也是旧档迁移的默认值。 */
+    initial: 'clear' as WeatherKind,
+    /** 天气随机游标初值；与行情、人口等经济随机完全隔离。 */
+    seed: 20260214,
+    /** 每种天气的持续时长范围（游戏分钟，含端点）。 */
+    duration: {
+      clear: { min: 360, max: 960 },
+      cloudy: { min: 240, max: 720 },
+      rain: { min: 180, max: 540 },
+      fog: { min: 180, max: 480 },
+    } as Record<WeatherKind, { readonly min: number; readonly max: number }>,
+    /** 转移概率表：每行按权重抽下一种天气，不做「每帧抽签」。 */
+    transitions: {
+      clear: { clear: 0.45, cloudy: 0.4, rain: 0.11, fog: 0.04 },
+      cloudy: { clear: 0.34, cloudy: 0.3, rain: 0.29, fog: 0.07 },
+      rain: { clear: 0.24, cloudy: 0.5, rain: 0.22, fog: 0.04 },
+      fog: { clear: 0.4, cloudy: 0.44, rain: 0.12, fog: 0.04 },
+    } as Record<WeatherKind, Record<WeatherKind, number>>,
+    /** 天气修饰量：天空、雾、环境亮度、太阳强度、星空都从这里派生。 */
+    profiles: {
+      clear: {
+        greyness: 0,
+        sunMultiplier: 1,
+        rainAmount: 0,
+        hemiMultiplier: 1,
+        ambientBonus: 0,
+        starMultiplier: 1,
+        fogNearScale: 1,
+        fogFarScale: 1,
+      },
+      cloudy: {
+        greyness: 0.55,
+        sunMultiplier: 0.42,
+        rainAmount: 0,
+        hemiMultiplier: 0.88,
+        ambientBonus: 0.05,
+        starMultiplier: 0.22,
+        fogNearScale: 0.82,
+        fogFarScale: 0.88,
+      },
+      rain: {
+        greyness: 0.72,
+        sunMultiplier: 0.22,
+        rainAmount: 1,
+        hemiMultiplier: 0.74,
+        ambientBonus: 0.03,
+        starMultiplier: 0.06,
+        fogNearScale: 0.55,
+        fogFarScale: 0.52,
+      },
+      fog: {
+        greyness: 0.88,
+        sunMultiplier: 0.1,
+        rainAmount: 0,
+        hemiMultiplier: 0.92,
+        ambientBonus: 0.14,
+        starMultiplier: 0.03,
+        fogNearScale: 0.3,
+        fogFarScale: 0.28,
+      },
+    } as Record<WeatherKind, WeatherProfile>,
+    /** 阴雨浓雾时天空与雾压向的冷灰色；按 `greyness` 与昼夜基准色混合。 */
+    overcast: {
+      skyTop: 0x5c6673,
+      skyHorizon: 0x8d969e,
+      skyGround: 0x77807c,
+      fogColor: 0x9aa3a8,
+      sunColor: 0xdbe3e8,
+    },
+  },
+  shadow: {
+    /** 默认保守档；低端设备可按下方规则自动降到低档。 */
+    quality: 'medium' as ShadowQuality,
+    /** 小屏或低核心设备自动降档（只影响阴影与雨量，不改玩法与判定）。 */
+    autoDowngrade: { maxWidth: 900, maxHardwareConcurrency: 4, quality: 'low' as ShadowQuality },
+    levels: {
+      off: { mapSize: 0, extent: 0, bias: -0.0004, normalBias: 0.02 },
+      low: { mapSize: 1024, extent: 38, bias: -0.0006, normalBias: 0.035 },
+      medium: { mapSize: 2048, extent: 52, bias: -0.0004, normalBias: 0.025 },
+      high: { mapSize: 4096, extent: 70, bias: -0.0003, normalBias: 0.02 },
+    } as Record<ShadowQuality, { readonly mapSize: number; readonly extent: number; readonly bias: number; readonly normalBias: number }>,
+    /** 太阳低于该高度角时关闭投影（弧度）；高于该值 0.03 以上才重新打开，避免频繁开关。 */
+    disableElevationRad: 0.06,
+    /** 达到该高度角时阴影为全强度，两者之间线性淡出。 */
+    fullElevationRad: 0.28,
+    near: 1,
+    far: 220,
+  },
+  rain: {
+    /** 高质量档的雨滴条数上限（每滴 2 个顶点）。按阴影档位缩放。 */
+    maxDrops: 1400,
+    qualityScale: { off: 0.35, low: 0.4, medium: 0.7, high: 1 } as Record<ShadowQuality, number>,
+    /** 雨体积（米）：跟随相机的水平范围与高度，不是整个世界。 */
+    width: 34,
+    depth: 34,
+    height: 22,
+    /** 下落速度（米/表现秒）。 */
+    fallSpeed: 26,
+    streakLength: 0.55,
+    /** 风的水平偏移，决定雨丝的倾斜方向。 */
+    windX: 1.8,
+    windZ: 0.6,
+    color: 0xa8bccc,
+    opacity: 0.42,
+  },
+} as const;
+
 /* ------------------------------------------------------------------ 行情 */
 
 export const MARKET = {
@@ -394,9 +723,12 @@ export const SAVE = {
    *     旧档在迁移时按迁移时刻的人口建立群组、一次性注入卖方与 AI 资金、
    *     建立晴川公寓 100 套与 4 块储备土地，并为已完成住房新区补齐住宅单元（幂等）。
    * v18：为每处房产增加持久挂牌版本高水位，旧档继承当前挂牌版本。
+   * v19：环境系统——天气种类、当前天气的起点与下次调度时刻、天气独立随机游标
+   *     （`environment` 切片）。太阳方向、天空颜色、雾与环境光都由游戏时间与天气推导，
+   *     不重复保存。
    *     纯校验调整（例如宣传强度按小数校验、行情调度校验）不占版本号。
    */
-  formatVersion: 18,
+  formatVersion: 19,
   formatTag: 'city-wealth-sim',
   dbName: 'city-wealth-sim',
   dbVersion: 1,

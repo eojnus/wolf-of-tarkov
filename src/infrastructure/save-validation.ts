@@ -44,6 +44,7 @@ import {
   formatSupplyRequestId,
 } from '../features/inventory';
 import { checkBookIntegrity, isValidCeoIdentity, type ShareBook } from '../features/equity';
+import { isWeatherKind } from '../features/environment';
 import { CARETAKER_PERSON_ID, GOVERNMENT_CONFIG_VERSION } from '../features/government';
 
 /* ---------------------------------------------------------------- 校验 */
@@ -2518,6 +2519,26 @@ function validateHousing(
   }
 }
 
+/**
+ * 环境（天气）切片校验。
+ *
+ * 只校验「不能由游戏时间推导」的字段：当前天气、过渡起点、下次调度与天气随机游标。
+ * 太阳方向、天空颜色、雾距离与环境光都在运行时由时间与天气推导，存档里没有副本，
+ * 因此也不存在需要核对的第二份数值。
+ */
+function validateEnvironment(state: Record<string, unknown>, totalMinute: number): void {
+  const environment = assertObject(state.environment, 'state.environment');
+  const weather = assertString(environment.weather, '当前天气');
+  if (!isWeatherKind(weather)) fail(`天气种类非法：${weather}`);
+  const previous = assertString(environment.previousWeather, '上一段天气');
+  if (!isWeatherKind(previous)) fail(`上一段天气种类非法：${previous}`);
+  const changedAt = assertNonNegativeInt(environment.changedAtMinute, '天气起点');
+  if (changedAt > totalMinute) fail('天气起点晚于当前游戏时间');
+  const endsAt = assertNonNegativeInt(environment.endsAtMinute, '下次天气调度时间');
+  if (endsAt <= totalMinute) fail('下次天气调度时间必须晚于当前游戏时间');
+  assertNonNegativeInt(environment.randomState, '天气随机状态');
+}
+
 export function validateSaveState(rawState: unknown): Record<string, unknown> {
   const state = assertObject(rawState, 'state');
 
@@ -2752,6 +2773,7 @@ export function validateSaveState(rawState: unknown): Record<string, unknown> {
   validateCityDevelopment(state, layout);
   validateRealEstate(state, finance, totalMinute);
   validateHousing(state, finance, totalMinute);
+  validateEnvironment(state, totalMinute);
 
   const world = assertObject(state.world, 'state.world');
   const player = assertObject(world.player, 'state.world.player');

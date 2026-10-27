@@ -542,6 +542,8 @@ export function buildBrandSign(context: DetailContext, label: string): BrandSign
     metalness: 0.05,
   });
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(signWidth, signHeight), material);
+  // 贴墙招牌只接收阴影，不把文字贴面当作实体遮挡物。
+  mesh.userData.shadowCaster = false;
   mesh.position.set(0, centerY, frontZ + 0.145);
   mesh.receiveShadow = true;
 

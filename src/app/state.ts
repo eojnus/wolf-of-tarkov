@@ -34,6 +34,10 @@ import { seedRealEstateWorld } from './real-estate';
 import { beginCityIndexMonth } from './city-stock-index';
 import { noteTermStarted } from './politics-simulation';
 import { createEmploymentState, type EmploymentState } from '../features/employment';
+import {
+  createEnvironmentState,
+  type EnvironmentState,
+} from '../features/environment';
 import { createHousingState, type HousingState } from '../features/housing';
 import {
   createRealEstateState,
@@ -179,6 +183,11 @@ export interface GameState {
   realEstate: RealEstateState;
   /** 3 个收入群组的家庭数、居住分配、购房意愿与月度住房指标（不保存余额与人口权威）。 */
   housing: HousingState;
+  /**
+   * 天气切片：当前天气、过渡起点、下次调度时刻与天气专用随机游标。
+   * 太阳方向、天空颜色、雾距离与环境光都由游戏时间推导，不在这里重复保存。
+   */
+  environment: EnvironmentState;
 }
 
 const MAX_REPORTS = 24;
@@ -239,6 +248,7 @@ export function createInitialState(): GameState {
     cityDevelopment: createCityDevelopmentState(0),
     realEstate: createRealEstateState(),
     housing: createHousingState(population.classes, 0),
+    environment: createEnvironmentState(clock.totalMinute),
   };
   // 房地产世界：产权主体账户（真实资金）、晴川公寓存量、储备土地与卖方挂牌。
   // 只在初始化时执行一次；重复调用按账户/建筑/地块 id 判重，不会重复注资或重复发房。

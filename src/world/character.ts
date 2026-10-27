@@ -55,7 +55,8 @@ export async function loadCharacterRig(): Promise<CharacterRig> {
   model.traverse((child) => {
     const mesh = child as THREE.Mesh;
     if (mesh.isMesh) {
-      mesh.castShadow = false;
+      // 人物参与统一太阳阴影；脚下的贴地圆片仍保留，夜里没有太阳投影时人物不至于「浮」在地上
+      mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.frustumCulled = false;
     }
