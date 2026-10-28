@@ -1394,3 +1394,76 @@ S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100�
   `userData.shadowCaster = false` 明确排除，不通过材质名称或资产路径猜测。
 - 该规则包括 InstancedMesh；不修改共享材质、不创建额外太阳、不改变碰撞和视觉种子。
 - 原型页继续独立预览，正式场景不恢复旧整栋 GLB 加载路径。
+
+## 二十九、晴川公寓室内会话契约
+
+### 入口与权限
+
+- 唯一入口是原住宅 F 菜单里的「进入个人住宅」按钮（`data-action="enter-home"`）。
+  原菜单、休息与房地产栏目全部保留；按钮只在 `onsite === true` 时渲染。
+- 界面不是权限：`Game.enterResidence()` 在点击时重新核对
+  1. `panels.activePanel === 'home'`；
+  2. World 当前为室外，且没有正在进行的室内切换/加载；
+  3. `world.getNearbyBuilding()` 的 `interactionId === 'home'` 且 `id === INTERIOR.buildingId`；
+  4. `freeResidenceOf(realEstate)` 返回 `kind === 'home'`、
+     `id === INTERIOR.residenceId`（`home-001`）、`buildingId === INTERIOR.buildingId`。
+- 不以 `owner.kind === 'player'`、净资产或房价判断居住权；进入不产生交易、扣费、房租或资产登记。
+- 世界加载完成、提交切换前，`World.enterInterior(validate?)` 再调用一次 app 提供的校验回调；
+  返回 `false` 时释放已加载场景、回到室外并返回 `{ ok: false, message }`。
+
+### 状态机
+
+- `World` 内存字段 `interiorMode: 'outdoor' | 'loading' | 'indoor'`，不写 `GameState`、不进存档。
+- `enterInterior()` 只允许从 `outdoor` 进入；`loading` 期间保持室外渲染、锁移动与重复进入，
+  不暂停经济模拟。全部必需模型成功后才挂载室内场景并切到 `indoor`。
+- `exitInterior()` 只允许在 `indoor` 或 `loading` 时调用；`indoor` 时恢复进入前的
+  `WorldSaveData`（人物位置/朝向/相机）并释放室内场景，`loading` 时等价于 `cancelInterior()`。
+- `cancelInterior()` 供读档、新游戏和 `dispose` 使用：递增 `interiorGeneration`，
+  迟到结果在 `enterInterior` 内就地 `dispose()`；已在室内则先恢复室外快照。
+- `isIndoor()`、`isInteriorTransitioning()`、`canExitInterior()` 是 app/HUD 的唯一查询口；
+  `canExitInterior()` 只在人物位于 `INTERIOR.exit` 半径内时为真，室内不是全屋任意位置可退出。
+
+### 同一运行时
+
+- 进入只把同一个 `player.group` 从 `city.scene` 移到室内 `THREE.Scene`，并改 pose、碰撞与相机；
+  退出移回。不重新 boot、不 `new Game`、不 `createInitialState`、不 `store.replace`、不重载角色。
+- 室内是独立 `THREE.Scene`，不塞进城市或楼体工厂；`World.render()` 在 `indoor` 只渲染室内，
+  并跳过 `environment.followCamera()` 与室外环境更新；退出后由 app 下一帧按最新状态重采样。
+- `World.syncLayout()` 在城市布局变化时仍照常更新城市；`indoor/loading` 期间不刷新附近建筑、
+  不重设室内相机、不应用读档位置修正。`isCollisionReady()` 在 `indoor` 恒为 `true`，
+  避免城市后台楼体加载锁住室内移动。
+
+### 碰撞与镜头
+
+- 室内碰撞是独立的 2D AABB 列表 `interiorColliders`；`update()` 在 `indoor` 只使用它和
+  `interiorBounds`，不覆盖城市 `handles/colliders`。门的可通行性由墙体分段碰撞保证，
+  天花板与门洞封口只进相机遮挡列表 `interiorOccluders`。
+- 人物碰撞半径取 `INTERIOR.player.collisionRadius = 0.3`，边界余量取 `PLAYER.radius`（0.42）；
+  室外仍用 `PLAYER.radius = 0.42` 与 `PLAYER_EDGE_MARGIN = 1.5`，默认参数不变。
+- 相机距离、俯仰、灵敏度、滚轮、跟随速率、目标高度与遮挡间隙全部在 `INTERIOR.camera`；
+  室内滚轮与俯仰由 `cameraProfile()` 切换，室外仍读 `CAMERA`。
+- 遮挡优先：射线命中任一 `interiorOccluders` 时收缩到命中点前
+  `collisionPadding = 0.14`，硬下限 `hardMinDistance = 0.35`，不会用舒适距离推穿墙；
+  相机 Y 夹在 `minHeight = 0.3` 与 `room.height - 0.12` 之间。
+- 相机距离小于 `characterMinDistance = 1.5` 时隐藏 `player.group`，离开墙面后恢复；
+  退出/取消时强制恢复可见。不修改共享材质，不做透明淡化或后期。
+
+### 存档与返回
+
+- 进入前记录当前室外 `WorldSaveData`（人物、相机、revision）。
+  加载中/室内调用 `getSaveData()` 一律返回该快照，所以手动保存、自动保存与导出都会回到楼外。
+- 不新增 `world.location/residenceId` 字段，不改 `SAVE.formatVersion = 19`、`WorldSaveData`
+  结构或迁移链；再次进入时固定布局不变。
+- 读档与 `startNewGame()` 在 `store.replace` 之前调用 `world.cancelInterior()` 并清 `interiorLoading`；
+  `World.restore()` / `resetToSpawn()` / `dispose()` 也会再调用一次 `cancelInterior()`。
+- 室内不推进时间、不触发月结/休息/睡眠；经济仍由原 RAF 的 `advanceGameTime` 正常推进。
+
+### 资源生命周期
+
+- 室内模块只在点击进入后 `await import('./interiors/qingchuan')`；启动、靠近建筑、打开菜单都不 preload。
+- 四件家具失败任一件则整次进入失败：`loadQingchuanInterior` 在 `catch` 中释放半成品后抛出，
+  `World` 保持室外、`outdoorSnapshot` 清空，可再次重试；不使用方块/占位几何顶替。
+- 退出或取消时 `dispose()` 遍历室内场景，按 `Set` 去重释放 geometry/material/texture，
+  灯光只移除不释放资源；不触碰 `player.group`、城市楼体工厂或 renderer。
+- `World.dispose()` 先递增代次、取消城市视觉请求，再摘出 `player.group`、释放室内场景，
+  然后按既有顺序释放城市与环境资源。

@@ -14,6 +14,7 @@
 
 import * as THREE from 'three';
 import { CAMERA, CITY, PLAYER } from '../content/config';
+import { INTERIOR } from '../content/interior';
 import {
   createBaseLayout,
   type CityLayoutView,
@@ -42,6 +43,7 @@ import {
   type PlayerPose,
   type PlayerUpdateResult,
 } from './player';
+import type { InteriorRuntime } from './interiors/qingchuan';
 import {
   attachBuildingVisual,
   buildCityScene,
@@ -237,6 +239,21 @@ export class World {
   /** 当前交互目标缓存，由 update / 模型加载 / 布局同步 / 读档后重新计算。 */
   private nearbyBuilding: LayoutBuilding | null = null;
 
+  /* ------------------------------------------------------------ 室内会话 */
+  /** 室内模式只存内存：outdoor → loading → indoor。 */
+  private interiorMode: 'outdoor' | 'loading' | 'indoor' = 'outdoor';
+  /** 室内场景与碰撞；只在 indoor 时非空。 */
+  private interior: InteriorRuntime | null = null;
+  /** 进入/取消/读档/新游戏/销毁都会递增；迟到的加载结果据此丢弃并释放。 */
+  private interiorGeneration = 0;
+  /** 进入前记录的完整室外回归快照（位置、朝向、相机）。 */
+  private outdoorSnapshot: WorldSaveData | null = null;
+  private interiorColliders: readonly Collider[] = [];
+  /** 相机遮挡盒：墙体 + 家具 + 天花板/门洞封口（人物碰撞不使用）。 */
+  private interiorOccluders: readonly Collider[] = [];
+  private interiorBounds: PlayerBounds | null = null;
+  private interiorExit: { readonly x: number; readonly z: number; readonly radius: number } | null = null;
+
   constructor(container: HTMLElement, callbacks: WorldCallbacks = {}) {
     this.container = container;
     this.callbacks = callbacks;
@@ -318,8 +335,10 @@ export class World {
     this.environment.setFogBase(this.city.fogBase.near, this.city.fogBase.far);
 
     this.beginVisualLoading();
-    this.refreshNearbyBuilding();
-    this.placeCamera(0, true);
+    if (this.interiorMode === 'outdoor') {
+      this.refreshNearbyBuilding();
+      this.placeCamera(0, true);
+    }
   }
 
   /* ---------------------------------------------------------- 楼体调度 */
@@ -369,7 +388,7 @@ export class World {
       );
     }
     if (this.collisionReady) this.markCollisionReady();
-    else this.notifyCollisionReadyChange(false);
+    else this.notifyCollisionReadyChange(this.isCollisionReady());
   }
 
   /** 把「碰撞就绪状态变化」异步通知给 app 层，避免在 World 构造期间回调到未赋值字段。 */
@@ -496,14 +515,14 @@ export class World {
   /** 碰撞就绪：通知监听者，并把等待中的读档位置修正补上（仅当原位置非法时）。 */
   private markCollisionReady(): void {
     this.collisionReady = true;
-    this.notifyCollisionReadyChange(true);
+    this.notifyCollisionReadyChange(this.isCollisionReady());
     for (const listener of [...this.readyListeners]) listener();
-    this.applyPendingRestoreCorrection();
+    if (this.interiorMode === 'outdoor') this.applyPendingRestoreCorrection();
   }
 
-  /** 碰撞（含模型加载或明确回退）是否已经就绪；app 层据此锁人物移动与 F 交互。 */
+  /** 碰撞就绪：室内以室内场景为准（城市在后台更新不阻塞室内）；室外看城市楼体。 */
   isCollisionReady(): boolean {
-    return this.collisionReady;
+    return this.interiorMode === 'indoor' ? true : this.collisionReady;
   }
 
   /**
@@ -534,6 +553,160 @@ export class World {
         resolve();
       });
     });
+  }
+
+  /* ------------------------------------------------------------ 室内会话 */
+
+  isIndoor(): boolean {
+    return this.interiorMode === 'indoor';
+  }
+
+  isInteriorTransitioning(): boolean {
+    return this.interiorMode === 'loading';
+  }
+
+  /** 只有站在门口触发范围内才允许离开；不是全屋任意位置。 */
+  canExitInterior(): boolean {
+    if (this.interiorMode !== 'indoor' || !this.interiorExit) return false;
+    const pose = this.player.pose();
+    return (
+      Math.hypot(pose.x - this.interiorExit.x, pose.z - this.interiorExit.z) <=
+      this.interiorExit.radius
+    );
+  }
+
+  /**
+   * 按需进入个人住宅：先记录室外回归快照，再动态加载室内模块与四类模型。
+   *
+   * 加载期间保持室外画面、锁人物移动，不暂停经济；只有全部模型可用后才原子切换。
+   * `validate` 由 app 提供，在加载完成、正式提交前再问一次居住权与会话是否仍有效；
+   * World 不读业务状态，只负责在返回 false 时释放半成品并保持室外。
+   * 失败时释放半成品并保持室外，绝不用占位几何顶替交付。
+   */
+  async enterInterior(
+    validate?: () => boolean,
+  ): Promise<{ ok: boolean; message?: string }> {
+    if (this.interiorMode !== 'outdoor') {
+      return { ok: false, message: '正在切换场景，请稍候' };
+    }
+    if (!this.collisionReady) {
+      return { ok: false, message: '城市仍在加载，请稍候' };
+    }
+
+    const snapshot = this.getSaveData();
+    this.outdoorSnapshot = snapshot;
+    this.interiorMode = 'loading';
+    this.interiorGeneration += 1;
+    const generation = this.interiorGeneration;
+    this.clearInput();
+
+    try {
+      const module = await import('./interiors/qingchuan');
+      const runtime = await module.loadQingchuanInterior();
+      if (this.disposed || generation !== this.interiorGeneration) {
+        runtime.dispose();
+        return { ok: false, message: '进入已取消' };
+      }
+      // 加载期间居住权或会话可能已变化：提交前由 app 再校验一次。
+      if (validate && !validate()) {
+        runtime.dispose();
+        this.interiorMode = 'outdoor';
+        this.outdoorSnapshot = null;
+        this.notifyCollisionReadyChange(this.isCollisionReady());
+        return { ok: false, message: '当前已不是可进入的个人住宅' };
+      }
+
+      this.interior = runtime;
+      this.interiorColliders = runtime.colliders;
+      this.interiorOccluders = runtime.occluders;
+      this.interiorBounds = runtime.bounds;
+      this.interiorExit = runtime.exit;
+
+      this.city.scene.remove(this.player.group);
+      runtime.scene.add(this.player.group);
+      this.player.restore(runtime.spawn);
+
+      this.yaw = INTERIOR.camera.spawnYaw;
+      this.pitch = INTERIOR.camera.pitch.default;
+      this.desiredDistance = INTERIOR.camera.distance.default;
+      this.currentDistance = this.desiredDistance;
+      this.followTarget.set(runtime.spawn.x, INTERIOR.camera.targetHeight, runtime.spawn.z);
+      this.placeInteriorCamera(0, true);
+      this.nearbyBuilding = null;
+      this.interiorMode = 'indoor';
+      this.setCameraProjection(
+        INTERIOR.camera.fov,
+        INTERIOR.camera.near,
+        INTERIOR.camera.far,
+      );
+      this.notifyCollisionReadyChange(true);
+      return { ok: true };
+    } catch (error) {
+      if (generation === this.interiorGeneration) {
+        this.interiorMode = 'outdoor';
+        this.outdoorSnapshot = null;
+      }
+      return { ok: false, message: describeError(error) };
+    }
+  }
+
+  /** 门口离开 / 取消加载：恢复进入前的室外位置、朝向与相机。 */
+  exitInterior(): boolean {
+    if (this.interiorMode === 'loading') {
+      this.cancelInterior();
+      return true;
+    }
+    if (this.interiorMode !== 'indoor' || !this.interior || !this.outdoorSnapshot) return false;
+
+    const snapshot = this.outdoorSnapshot;
+    this.interior.scene.remove(this.player.group);
+    this.city.scene.add(this.player.group);
+    this.interior.dispose();
+    this.interior = null;
+    this.interiorColliders = [];
+    this.interiorOccluders = [];
+    this.interiorBounds = null;
+    this.interiorExit = null;
+    this.outdoorSnapshot = null;
+    this.interiorMode = 'outdoor';
+    this.setCameraProjection(CAMERA.fov, CAMERA.near, CAMERA.far);
+    this.player.group.visible = true;
+
+    this.player.restore({
+      x: snapshot.player.x,
+      z: snapshot.player.z,
+      facing: snapshot.player.facing,
+    });
+    if (snapshot.camera) {
+      this.yaw = snapshot.camera.yaw;
+      this.pitch = clamp(snapshot.camera.pitch, CAMERA.pitch.min, CAMERA.pitch.max);
+      this.desiredDistance = clamp(
+        snapshot.camera.distance,
+        CAMERA.distance.min,
+        CAMERA.distance.max,
+      );
+      this.currentDistance = this.desiredDistance;
+    }
+    this.clearInput();
+    this.placeCamera(0, true);
+    this.refreshNearbyBuilding();
+    this.notifyCollisionReadyChange(this.isCollisionReady());
+    return true;
+  }
+
+  /**
+   * 读档 / 新游戏 / dispose 前失效室内会话。
+   * 加载中只递增代次，迟到结果会被 enterInterior 释放；已在室内则恢复室外快照。
+   */
+  cancelInterior(): void {
+    if (this.interiorMode === 'loading') {
+      this.interiorGeneration += 1;
+      this.interiorMode = 'outdoor';
+      this.outdoorSnapshot = null;
+      this.notifyCollisionReadyChange(this.isCollisionReady());
+      return;
+    }
+    if (this.interiorMode === 'indoor') this.exitInterior();
   }
 
   /* ---------------------------------------------------------- 位置修正 */
@@ -661,26 +834,46 @@ export class World {
     this.clearInput();
   };
 
+  /** 当前场景的镜头参数：室内近距离范围独立，室外保持原体验。 */
+  private cameraProfile(): {
+    readonly distance: { readonly min: number; readonly max: number };
+    readonly pitch: { readonly min: number; readonly max: number };
+    readonly sensitivity: number;
+    readonly zoomStep: number;
+  } {
+    return this.interiorMode === 'indoor' ? INTERIOR.camera : CAMERA;
+  }
+
   private handleMouseMove = (event: MouseEvent): void => {
     if (!this.pointerLocked) return;
-    this.yaw -= event.movementX * CAMERA.sensitivity;
+    const profile = this.cameraProfile();
+    this.yaw -= event.movementX * profile.sensitivity;
     this.pitch = clamp(
-      this.pitch + event.movementY * CAMERA.sensitivity,
-      CAMERA.pitch.min,
-      CAMERA.pitch.max,
+      this.pitch + event.movementY * profile.sensitivity,
+      profile.pitch.min,
+      profile.pitch.max,
     );
   };
 
   private handleWheel = (event: WheelEvent): void => {
     if (!this.pointerLocked) return;
     event.preventDefault();
-    const factor = event.deltaY > 0 ? 1 / CAMERA.zoomStep : CAMERA.zoomStep;
+    const profile = this.cameraProfile();
+    const factor = event.deltaY > 0 ? 1 / profile.zoomStep : profile.zoomStep;
     this.desiredDistance = clamp(
       this.desiredDistance * factor,
-      CAMERA.distance.min,
-      CAMERA.distance.max,
+      profile.distance.min,
+      profile.distance.max,
     );
   };
+
+  /** 切换室内/室外时同步投影参数；raf 循环与 resize 都使用当前相机。 */
+  private setCameraProjection(fov: number, near: number, far: number): void {
+    this.camera.fov = fov;
+    this.camera.near = near;
+    this.camera.far = far;
+    this.camera.updateProjectionMatrix();
+  }
 
   private handlePointerLockChange = (): void => {
     const locked = document.pointerLockElement === this.renderer.domElement;
@@ -768,14 +961,33 @@ export class World {
     dtSeconds: number,
     weather: ReadonlyEnvironmentState,
   ): void {
+    // 室内不更新室外雨幕、太阳与天空；退出后由 app 的下一帧按最新状态重新采样。
+    if (this.interiorMode === 'indoor') return;
     const pose = this.player.pose();
     this.environment.update(minute, dtSeconds, weather, pose.x, pose.z);
   }
 
   update(dtMoveSeconds: number, canMove: boolean, moveMultiplier = 1): PlayerUpdateResult {
+    if (this.interiorMode === 'indoor' && this.interiorBounds) {
+      const canMoveNow = canMove && !this.disposed;
+      this.movementAllowed = canMoveNow;
+      const dir = canMoveNow ? this.readMoveDirection() : { x: 0, z: 0 };
+      return this.player.update(
+        dtMoveSeconds,
+        dir,
+        this.interiorColliders,
+        this.interiorBounds,
+        canMoveNow,
+        canMoveNow && this.sprinting,
+        moveMultiplier,
+        PLAYER.radius,
+        INTERIOR.player.collisionRadius,
+      );
+    }
+
     // 碰撞未就绪（GLB 仍在加载）时即使 app 层传允许移动也必须锁住，
     // 避免用布局 AABB 走完后模型变大把人物卡进建筑。
-    const canMoveNow = canMove && this.collisionReady;
+    const canMoveNow = canMove && this.collisionReady && this.interiorMode === 'outdoor';
     this.movementAllowed = canMoveNow;
     // 即使不能移动也要推进一帧，让动画平滑回到待机而不是冻结在行走姿势
     const dir = canMoveNow ? this.readMoveDirection() : { x: 0, z: 0 };
@@ -789,7 +1001,7 @@ export class World {
       canMoveNow && this.sprinting,
       moveMultiplier,
     );
-    this.refreshNearbyBuilding();
+    if (this.interiorMode === 'outdoor') this.refreshNearbyBuilding();
     return result;
   }
 
@@ -801,6 +1013,10 @@ export class World {
    * 多个候选取表面距离最小者；相等时按稳定建筑 ID 排序，不依赖模型异步加载顺序。
    */
   private refreshNearbyBuilding(): void {
+    if (this.interiorMode !== 'outdoor') {
+      this.nearbyBuilding = null;
+      return;
+    }
     const pose = this.player.pose();
     let best: LayoutBuilding | null = null;
     let bestSurface = Number.POSITIVE_INFINITY;
@@ -831,10 +1047,59 @@ export class World {
 
   /** 摄像机位置与遮挡。dt 用真实时间，不随经济倍率变化。 */
   render(dtSeconds: number): void {
+    if (this.interiorMode === 'indoor' && this.interior) {
+      this.placeInteriorCamera(dtSeconds, false);
+      this.renderer.render(this.interior.scene, this.camera);
+      return;
+    }
     this.placeCamera(dtSeconds, false);
     // 相机移动之后再让天空与雨体积跟随，避免穹顶与雨幕比画面慢一帧
     this.environment.followCamera();
     this.renderer.render(this.city.scene, this.camera);
+  }
+
+  /** 室内近距第三人称：滚轮范围与遮挡硬下限分离，避障优先。 */
+  private placeInteriorCamera(dtSeconds: number, immediate: boolean): void {
+    const pose = this.player.pose();
+    const target = new THREE.Vector3(pose.x, INTERIOR.camera.targetHeight, pose.z);
+    if (immediate) {
+      this.followTarget.copy(target);
+      this.currentDistance = this.desiredDistance;
+    } else {
+      const followK = 1 - Math.exp(-INTERIOR.camera.followLambda * Math.max(dtSeconds, 0));
+      this.followTarget.lerp(target, followK);
+      const distK = 1 - Math.exp(-INTERIOR.camera.distanceLambda * Math.max(dtSeconds, 0));
+      this.currentDistance += (this.desiredDistance - this.currentDistance) * distK;
+    }
+
+    const cosPitch = Math.cos(this.pitch);
+    const direction = new THREE.Vector3(
+      Math.sin(this.yaw) * cosPitch,
+      Math.sin(this.pitch),
+      Math.cos(this.yaw) * cosPitch,
+    ).normalize();
+
+    let distance = this.currentDistance;
+    for (const collider of this.interiorOccluders) {
+      const hit = rayBoxDistance(this.followTarget, direction, collider, distance);
+      if (hit !== null) {
+        distance = Math.min(distance, hit - INTERIOR.camera.collisionPadding);
+      }
+    }
+    distance = Math.max(INTERIOR.camera.hardMinDistance, distance);
+
+    this.camera.position
+      .copy(this.followTarget)
+      .addScaledVector(direction, distance);
+    // 天花板/地面双向夹紧：抬头时相机不穿出屋顶，低头时不切入地板
+    this.camera.position.y = clamp(
+      this.camera.position.y,
+      INTERIOR.camera.minHeight,
+      INTERIOR.room.height - 0.12,
+    );
+    this.camera.lookAt(this.followTarget);
+    // 贴墙时第三人称距离不足，隐藏人物避免头部挡满画面；离开墙面自动恢复。
+    this.player.group.visible = distance >= INTERIOR.camera.characterMinDistance;
   }
 
   private placeCamera(dtSeconds: number, immediate: boolean): void {
@@ -897,6 +1162,8 @@ export class World {
 
   /** 存档只保存人物与摄像机；逻辑布局属于 GameState（Lead 的存档切片），这里不重复保存。 */
   getSaveData(): WorldSaveData {
+    // 加载中/室内：保存进入前的室外回归快照，经济与物品仍是保存瞬间的最新状态。
+    if (this.interiorMode !== 'outdoor' && this.outdoorSnapshot) return this.outdoorSnapshot;
     const pose = this.player.pose();
     return {
       player: { x: pose.x, z: pose.z, facing: pose.facing },
@@ -912,6 +1179,7 @@ export class World {
    * 调用约定：app 层必须先 `syncLayout(存档布局)` 再 `restore(worldData)`。
    */
   restore(data: WorldSaveData): void {
+    this.cancelInterior();
     const pose: PlayerPose = {
       x: data.player.x,
       z: data.player.z,
@@ -942,6 +1210,7 @@ export class World {
   }
 
   resetToSpawn(): void {
+    this.cancelInterior();
     this.pendingRestorePose = null;
     this.player.restore({ x: CITY.spawn.x, z: CITY.spawn.z, facing: Math.PI });
     this.yaw = 0;
@@ -961,7 +1230,20 @@ export class World {
    */
   dispose(): void {
     this.disposed = true;
+    this.interiorGeneration += 1;
     this.cancelVisualRequests();
+    if (this.interior) {
+      // 人物属于全局 Player，不能随室内场景一起 dispose
+      this.interior.scene.remove(this.player.group);
+      this.interior.dispose();
+      this.interior = null;
+    }
+    this.interiorMode = 'outdoor';
+    this.outdoorSnapshot = null;
+    this.interiorColliders = [];
+    this.interiorOccluders = [];
+    this.interiorBounds = null;
+    this.interiorExit = null;
     this.pendingVisualLoads = 0;
     this.readyListeners.clear();
     window.removeEventListener('keydown', this.handleKeyDown);

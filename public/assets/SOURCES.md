@@ -159,6 +159,46 @@ You can use our assets for any purpose … You can redistribute them"。
 `street_lamp_01`（3 万三角面、4 张贴图）在本轮预算内性价比不足；`painted_concrete`
 （绿色油漆混凝土）与 `concrete_tile_facade`（过深肋板）与「浅色现代立面」目标不符，已替换。
 
+## 晴川公寓室内家具（feature/qingchuan-apartment-interior）
+
+本轮为晴川公寓首套约 20㎡ 室内引入四件真实外部家具，全部来自 **Poly Haven**，
+全部为 **CC0 1.0**（可复制、修改、再分发与商用，署名非强制）。核查日期：**2026-10-28**。
+
+许可依据：<https://polyhaven.com/license> —— “All assets … are licensed as CC0 …
+You can use our assets for any purpose … You can redistribute them”。
+四件资产在各自作品页与 Poly Haven API（`https://api.polyhaven.com/info/<id>`）均返回
+`license: CC0`，未使用登录、付费或需要额外授权的下载通道。
+
+下载方式：作品页的 **glTF 1K** 包（`https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/<id>/<id>_1k.gltf`
++ 同目录 `.bin` 与 `textures/`）。落地时把 `.gltf` / `.bin` 重命名为 `<id>.gltf` / `<id>.bin`
+并同步 `buffers[].uri`，贴图保留原文件名与相对路径；**几何未做减面、未缩放、未改材质**。
+
+| assetId（项目内稳定标识） | Poly Haven 资产 | 作者 | 本地文件 | 用途 |
+| --- | --- | --- | --- | --- |
+| `polyhaven.old-bed-frame` | [Old Bed Frame](https://polyhaven.com/a/old_bed_frame)（`old_bed_frame`） | Luca B | `models/interiors/qingchuan/old_bed_frame/` | 单人床床架（床头靠北侧隔断） |
+| `polyhaven.sofa-01` | [Sofa 01](https://polyhaven.com/a/Sofa_01)（`Sofa_01`） | Kirill Sannikov | `models/interiors/qingchuan/Sofa_01/` | 南窗下紧凑双人沙发（靠南墙、朝北） |
+| `polyhaven.wooden-table-02` | [Wooden Table 02](https://polyhaven.com/a/wooden_table_02)（`wooden_table_02`） | Serhii Khromov | `models/interiors/qingchuan/wooden_table_02/` | 东墙书桌/餐桌 |
+| `polyhaven.dining-chair-02` | [Dining Chair 02](https://polyhaven.com/a/dining_chair_02)（`dining_chair_02`） | James Ray Cock | `models/interiors/qingchuan/dining_chair_02/` | 书桌配椅（面向东侧桌） |
+
+真实资源统计（由本地 glTF/`accessors` 与文件系统直接统计，非估算）：
+
+| 资产 | 顶点 | 三角面 | 材质 | 贴图 | 原始包围盒（宽 × 高 × 深，米） | 文件体积（KiB） |
+| --- | --- | --- | --- | --- | --- | --- |
+| Old Bed Frame | 35,560 | 49,990 | 1 | diff / nor_gl / arm，均 1024² | 0.905 × 1.201 × 2.002 | 3,947 |
+| Sofa 01 | 2,708 | 4,101 | 1 | diff / nor_gl / arm，均 1024² | 1.571 × 0.796 × 0.658 | 506 |
+| Wooden Table 02 | 200 | 196 | 1 | diff / nor_gl / arm，均 1024² | 1.134 × 0.799 × 0.706 | 474 |
+| Dining Chair 02 | 12,891 | 22,013 | 1 | diff / nor_gl / arm，均 1024² | 0.434 × 0.975 × 0.576 | 900 |
+
+- 合计 **20 个文件 / 5,965,954 字节（约 5.69 MiB）**；12 张 1024×1024 JPEG，4 个材质。
+- 每件模型只有 1 个节点、1 个 mesh、1 个 primitive，材质使用 baseColor + normal + metallicRoughness（ARM 打包，
+  运行时只读取 G/B 通道；R 通道未配置 occlusion，未被额外使用）。
+- 未引入 4K/8K 贴图、未引入 KTX2/Draco 解码器或任何新依赖；加载沿用项目既有 `GLTFLoader`。
+- 四件模型的贴图均随 Poly Haven 1K 包下载，属于同一资产的同一许可，无第三方贴图。
+
+运行方式（`src/content/interior.ts`）：四件家具各自保留稳定 `assetId`、独立 `Object3D`（Group 包裹 glTF scene）、
+尺寸/旋转/碰撞包围盒配置；进入住宅时才动态 `import()` 室内模块并按 URL 加载，退出时统一释放
+geometry/material/texture，不触碰城市共享资产。
+
 ## 替换资源时的注意事项
 
 1. 整栋建筑外观不再由 `config.ts` 的 `model` 字段决定：正式场景一律走

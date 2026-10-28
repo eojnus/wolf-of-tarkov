@@ -90,6 +90,9 @@ export interface EstateSectionView {
   readonly onsiteHint: string;
   /** 现场办理：只有站在晴川公寓时才允许成交、挂牌、接受报价。 */
   readonly onsite: boolean;
+  /** 现场进入个人住宅：只表示界面可用，点击时 app 会重新校验现场与永久居住权。 */
+  readonly canEnterResidence: boolean;
+  readonly residenceEntryNote: string;
 }
 
 function districtTextOf(districtId: string): string {
@@ -314,6 +317,10 @@ export function buildEstateView(state: ReadonlyGameState, onsite: boolean): Esta
       ? '你在晴川公寓现场：可以购买、挂牌、改价、撤销与接受土地报价。'
       : '当前只能远程查看；购买、挂牌与报价处理需要在晴川公寓现场办理。',
     onsite,
+    canEnterResidence: onsite && residence !== null,
+    residenceEntryNote:
+      '首轮只开放这一套永久居住权住宅的固定室内：进门后可查看玄关、厨房、卫浴与卧室起居区，' +
+      '走到门口按 F 离开。室内不提供家具编辑、交易或新的生活玩法。',
   };
 }
 

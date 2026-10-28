@@ -221,7 +221,13 @@ export class Hud {
    * 交互提示：只消费结构字段（id/name/subtitle），不依赖 world 或 content 的具体建筑类型，
    * 因此动态布局建筑与基础城区建筑走同一条渲染路径。
    */
-  setHint(building: { readonly id: string; readonly name: string; readonly subtitle: string } | null): void {
+  setHint(building: {
+    readonly id: string;
+    readonly name: string;
+    readonly subtitle: string;
+    /** 动作词；缺省为「进入」，住宅门口用「离开」。 */
+    readonly verb?: string;
+  } | null): void {
     const nextId = building?.id ?? null;
     if (nextId === this.hintId) return;
     this.hintId = nextId;
@@ -230,7 +236,7 @@ export class Hud {
       return;
     }
     this.hintKeyEl.textContent = 'F';
-    this.hintTextEl.textContent = `进入 ${building.name}`;
+    this.hintTextEl.textContent = `${building.verb ?? '进入'} ${building.name}`;
     this.hintSubEl.textContent = building.subtitle;
     this.hintEl.hidden = false;
   }

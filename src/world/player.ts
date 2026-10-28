@@ -159,6 +159,8 @@ export class Player {
     canMove: boolean,
     sprinting: boolean,
     speedMultiplier = 1,
+    edgeMargin = PLAYER_EDGE_MARGIN,
+    collisionRadius: number = PLAYER.radius,
   ): PlayerUpdateResult {
     const length = Math.hypot(dir.x, dir.z);
     if (!canMove || length < 1e-6 || dtSeconds <= 0) {
@@ -174,11 +176,11 @@ export class Player {
 
     const dirX = dir.x / length;
     const dirZ = dir.z / length;
-    const minX = bounds.minX + PLAYER_EDGE_MARGIN;
-    const maxX = bounds.maxX - PLAYER_EDGE_MARGIN;
-    const minZ = bounds.minZ + PLAYER_EDGE_MARGIN;
-    const maxZ = bounds.maxZ - PLAYER_EDGE_MARGIN;
-    const radius = PLAYER.radius;
+    const minX = bounds.minX + edgeMargin;
+    const maxX = bounds.maxX - edgeMargin;
+    const minZ = bounds.minZ + edgeMargin;
+    const maxZ = bounds.maxZ - edgeMargin;
+    const radius = collisionRadius;
     const beforeX = this.posX;
     const beforeZ = this.posZ;
 
