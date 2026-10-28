@@ -65,6 +65,18 @@ function residenceBlock(view: EstateSectionView): string {
     </div>`;
 }
 
+/** 现场进入个人住宅：界面只负责发起，权限与加载由 app / world 处理。 */
+function residenceEntryBlock(view: EstateSectionView): string {
+  return `
+    <div class="block">
+      ${title('个人住宅')}
+      <div class="note">${esc(view.residenceEntryNote)}</div>
+      <div class="actions" style="margin-top:10px">
+        <button type="button" class="btn btn-primary" data-action="enter-home"
+          ${view.canEnterResidence ? '' : 'disabled'}>进入个人住宅</button>
+      </div>
+    </div>`;
+}
 function holdingRow(card: EstateCardView, onsite: boolean): string {
   const canTrade = onsite;
   const priceValue = card.priceCents > 0 ? (card.priceCents / 100).toFixed(0) : '';
@@ -167,6 +179,7 @@ export function renderEstate(view: EstateSectionView): string {
 
   return `
     ${residenceBlock(view)}
+    ${view.onsite ? residenceEntryBlock(view) : ''}
 
     <div class="block">
       ${title('我的物业')}

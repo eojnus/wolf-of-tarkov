@@ -123,6 +123,8 @@ export interface PanelHandlers {
   onAcceptOffer(offerId: string, priceCents: number): CommandOutcome;
   /** 房地产：拒绝 AI 土地收购报价。 */
   onRejectOffer(offerId: string): CommandOutcome;
+  /** 从晴川公寓现场进入个人住宅（权限由 app 层按现场与永久居住权重新校验）。 */
+  onEnterHome(): void;
 }
 
 /** 建筑入口在地点上的含义：用于标题栏的地点说明，不参与任何业务判断。 */
@@ -1193,6 +1195,9 @@ export class PanelManager {
         this.handlers.onBuyHome(propertyId, priceCents, version);
         break;
       }
+      case 'enter-home':
+        this.handlers.onEnterHome();
+        break;
       case 're-buy-land': {
         const propertyId = target.dataset.property ?? '';
         const priceCents = Number(target.dataset.price ?? '0');

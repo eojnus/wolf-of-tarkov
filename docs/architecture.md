@@ -22,6 +22,7 @@ content/       数值与文案配置（不写规则逻辑）
   politics.ts  3 收入 × 4 利益 = 12 交叉政治群体、满意度基线、提前选举参数
   city-economy.ts 游戏 GDP、连续指数、建设门槛、招商与长期统计边界
   districts.ts 固定城区模板（几何、道路、地块、建筑与模板版本）
+  interior.ts  晴川公寓首套室内：尺寸、家具摆位、相机范围、碰撞半径与资产清单
 
 features/      业务模型与纯计算（只认识自己的切片）
   finance      唯一资金入口：账户、流水、预留、划转
@@ -99,6 +100,7 @@ world/         Three.js 场景、角色与控制
   environment/ 天空、唯一太阳、雾与降雨，统一管理环境资源
   buildings/   模块化建筑视觉库（正式地图唯一建筑外观路径）：plan.ts 是规划尺寸解析的唯一入口，
                layout-adapter.ts 是只读布局 → 视觉请求的唯一投影入口
+  interiors/   按需加载的室内场景；qingchuan.ts 只建房间、家具与室内碰撞/镜头遮挡，不建 renderer/RAF
 dev/           building-prototype.ts：独立预览页入口，不属于正式游戏启动链路（复用同一个工厂）
 ```
 
@@ -720,3 +722,81 @@ AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − �
 - 透明玻璃与 Sprite 标签不投影；招牌贴面显式标记 `userData.shadowCaster = false`，只接收阴影。
 - 标记属于内存渲染元数据，不进存档。环境层不读取房产或资金，建筑工厂不决定天气或创建光源。
 - World 销毁先失效并取消建筑请求，再释放人物与环境、场景楼体，最后释放工厂共享资产和 renderer。
+
+## 17. 晴川公寓室内会话（首套住宅）
+
+### 17.1 范围与文件
+
+本轮只接入永久住所 `home-001` 的固定室内，不做多套住宅、家具编辑、交易、库存或装修系统。
+
+| 层 | 位置 | 负责 | 不负责 |
+| --- | --- | --- | --- |
+| 配置 | `content/interior.ts` | 房间尺寸、门窗洞口、家具摆位与碰撞 footprint、相机范围、出入落点、资产清单 | 不建 Three.js 对象、不读业务状态 |
+| 表现 | `world/interiors/qingchuan.ts` | 程序化壳体/玄关/卫浴/厨房/软装、四类 glTF（`.gltf` + `.bin` + 贴图）加载、室内碰撞与相机遮挡、`dispose` | 不创建 renderer/RAF、不读写 GameState |
+| 会话 | `world/world.ts` | `outdoor → loading → indoor` 状态机、场景挂载、相机切换、存档快照、代次与释放 | 不读房产/资金，不判断居住权 |
+| 协调 | `app/game.ts` | 按钮回调、入口权限复核、加载锁、F 进出与提示、读档/新游戏失效 | 不建室内场景、不持有家具资源 |
+
+### 17.2 会话与场景
+
+- `World` 用内存字段 `interiorMode` 表示 `outdoor / loading / indoor`，`interiorGeneration`
+  标记会话代次；两者都不进 `GameState` 与存档。
+- 进入只把**同一个** `player.group` 从 `city.scene` 移到室内 `THREE.Scene`；退出移回并恢复进入前的
+  `WorldSaveData`。不重建 Game、Store、Player、renderer 或角色动画。
+- 室内使用独立 `THREE.Scene` 与独立碰撞/遮挡列表；`render()` 在室内只渲染该场景，不渲染城市，
+  也不调用 `environment.followCamera()`。城市场景与其 GPU 资源保持驻留，退出无需重建。
+- 室内是独立模块，只有点击「进入个人住宅」后 `await import('./interiors/qingchuan')`；
+  启动、靠近建筑与打开菜单都不会预加载家具。
+
+### 17.3 加载、失败与资源所有权
+
+- 加载期间保持室外画面，`Game.interiorLoading` 锁住人物移动与重复进入，但不暂停模拟。
+- 四件外部家具先只加载成 `{spec, model}`，**不立刻挂进场景**；`Promise.allSettled` 等四个请求全部结束后
+  才统一提交。任一失败时，连同迟到成功的模型逐个 `disposeObject(model)`，再 `disposeScene(scene)` 抛出，
+  World 回到 `outdoor` 且清空回归快照，app 提示失败并允许重试。**不用方块/占位几何顶替。**
+- 单个 glTF 的清理边界：`loader.loadAsync` 拒绝时，半成品只被 loader 内部引用，由 loader 自己回收；
+  一旦 `gltf.scene` 交给本模块，之后提交阶段抛错就由本模块 `disposeObject` 负责，不要求模型已经挂进场景。
+- 只有全部成功后才把模型包进 `Group` 挂场景并登记家具碰撞；提交阶段异常同样由 `disposeScene` 兜底释放。
+- `dispose()` 遍历室内场景，用 `Set` 去重后释放 geometry / material / texture；灯光只移除。
+  人物属于全局 Player，不随室内释放；城市楼体工厂与全局 renderer 的共享资源不在遍历范围内。
+- `World.dispose()` 先递增代次、取消城市视觉请求，再摘出 `player.group`、释放室内场景，
+  最后按原有顺序释放城市、环境与 renderer。迟到的加载结果在 `enterInterior` 内检测代次后就地释放。
+
+### 17.4 碰撞、移动与镜头
+
+- 室内人物用独立的 2D AABB 碰撞与房间边界；`Player.update` 的 `edgeMargin` 与 `collisionRadius`
+  改为可选参数，默认值仍是室外的 `1.5` 与 `PLAYER.radius`。室内取边界余量 `PLAYER.radius`（0.42）、
+  碰撞半径 `INTERIOR.player.collisionRadius`（0.3），不放大房间尺寸。
+- 移动碰撞与相机遮挡分开：墙体分段、家具、卫浴/厨房设施进移动碰撞；天花板与门洞封口
+  只进 `interiorOccluders`，避免 2D 碰撞把整间房封死、同时让门洞保持可通行。
+- 服务区（玄关/卫浴/厨房）与卧室起居室之间有一道轻量隔断：门洞净宽 1.12m（x 1.54–2.66，高 2.05m），
+  两侧 0.04m 门框贴边、不占净宽；厨房南端 x 2.70–3.30 补短墙。1.05m 滑门扇固定全开，停在卫浴南墙外侧
+  （z≈2.49），不做门动画。门头（2.05–2.55m）只进相机遮挡；门框立柱、短墙与门扇停靠位进移动碰撞。
+- 近距第三人称相机参数集中在 `INTERIOR.camera`，`cameraProfile()` 按 `interiorMode` 切换滚轮/俯仰；
+  室外仍用原有 `CAMERA`。遮挡命中时收缩到 `collisionPadding = 0.14` 前，硬下限 `0.35`，
+  相机 Y 夹在 `0.3` 与 `room.height - 0.12` 之间；距离小于 `1.5m` 时隐藏人物，退出时恢复。
+- 进入/退出同步相机 `fov/near/far`；`resize()` 继续只改 aspect，室内外共用同一 camera。
+
+### 17.5 与城市异步任务、读档的隔离
+
+- `syncLayout()` 在城市布局变化时照常更新城市，但 `indoor/loading` 期间不刷新附近建筑、
+  不调用 `placeCamera`、不应用读档位置修正。
+- `isCollisionReady()` 在 `indoor` 恒为 `true`（室内场景已完整可用），城市后台楼体加载
+  不会锁住室内移动；`loading` 仍按城市就绪状态返回，由 app 的加载锁负责。
+- 读档与 `startNewGame()` 在 `store.replace` 之前调用 `world.cancelInterior()`；
+  `World.restore()` / `resetToSpawn()` / `dispose()` 也会再次失效会话，迟到回调不会把新存档拉回房间。
+- app 层另有 `residenceRequest` 代次（内存字段，不进存档）：`enterResidence` 在 await 之后与 `finally`
+  都核对当前请求；读档、新游戏、`dispose` 调用 `invalidateResidenceRequest()` 递增代次并清加载锁。
+  过期请求不弹提示、不同步界面、不请求鼠标锁定、不清新请求的 `interiorLoading`。加载完成时若面板已打开
+  或 `document.hidden`，不抢鼠标、不擅自关闭面板。World 自己的 `interiorGeneration` 保持不变，两层各管一段。
+- 与深色 UI 合并后，启动、继续、进入完成与离开住宅统一经 `Game.requestPointerLock()`；
+  粗指针设备、页面隐藏或任意面板打开时跳过锁定请求。菜单临时暂停仍由当前 `pause` 入口表达，
+  不因进入/退出室内改写手动暂停或速度。
+- 室内不推进时间、不触发休息/睡眠/月结；经济模拟仍由原 RAF 的 `advanceGameTime` 按自然时间推进。
+
+### 17.6 存档与返回
+
+- 进入前记录完整室外 `WorldSaveData`；加载中与室内时 `getSaveData()` 返回该快照，
+  因此手动保存、自动保存与导出都落在楼外安全位置。
+- 不新增地点字段，不改 `SAVE.formatVersion = 19`、`WorldSaveData` 结构或迁移链；
+  读档后人物在楼外，再次进入时固定家具与布局保持不变。
+- 离开住宅由门口 F 触发（`canExitInterior()` 半径判定），退出后恢复进入前的室外位置、朝向与相机。

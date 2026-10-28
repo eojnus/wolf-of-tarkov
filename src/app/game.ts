@@ -40,6 +40,8 @@ import { EstateCommands } from './real-estate-commands';
 import { pushEnvironment } from './environment';
 import { entryAllows, entryDeniedMessage, type EntryCapability } from './entry-policy';
 import { buildEstateView } from './real-estate-view';
+import { INTERIOR } from '../content/interior';
+import { freeResidenceOf } from '../features/real-estate';
 import { buildSuppliesView } from './supplies-view';
 import { moveMultiplierOf } from '../features/survival';
 import { createInitialState, type GameState } from './state';
@@ -85,6 +87,13 @@ export class Game {
   private activeShopId: string | null = null;
   /** 清算确认中的重入保护：确认框本身是阻塞的，这里只挡住极端重复触发。 */
   private liquidatePending = false;
+  /** 室内加载中：锁移动与重复进入；不暂停经济模拟。 */
+  private interiorLoading = false;
+  /**
+   * 住宅进入请求代次。读档、新游戏、dispose 会递增它；await 返回后只有仍是
+   * 当前请求才允许通知、同步界面与请求鼠标锁定，避免过期请求改到新会话。
+   */
+  private residenceRequest = 0;
 
   private readonly keyHandler = (event: KeyboardEvent) => this.handleKey(event);
   private readonly visibilityHandler = () => this.handleVisibility();
@@ -267,6 +276,9 @@ export class Game {
         this.withEntry('estate', () => this.estate.cancelListing(propertyId, expectedVersion)),
       onAcceptOffer: (offerId, priceCents) => this.confirmAcceptOffer(offerId, priceCents),
       onRejectOffer: (offerId) => this.withEntry('estate', () => this.estate.rejectOffer(offerId)),
+      onEnterHome: () => {
+        void this.enterResidence();
+      },
     }, (query) => buildPersonalView(this.store.state, query),
     (securityId, order) => buildSecuritiesPanel(this.store.state, securityId, order),
     () => buildGovernmentView(this.store.state),
@@ -330,7 +342,7 @@ export class Game {
     this.rafId = requestAnimationFrame(this.tick);
     this.updateLockOverlay();
     // 启动按钮本身是用户手势，可以直接尝试锁定鼠标
-    this.world.requestPointerLock();
+    this.requestPointerLock();
     this.toast.show(
       'info',
       `欢迎来到${BRANDING.cityName}。点击画面锁定鼠标，按 F 与建筑交互。`,
@@ -344,6 +356,7 @@ export class Game {
   }
 
   dispose(): void {
+    this.invalidateResidenceRequest();
     this.stop();
     this.unsubscribe();
     window.removeEventListener('keydown', this.keyHandler);
@@ -361,7 +374,11 @@ export class Game {
     // 只有「未暂停 + 未开面板 + 鼠标已锁定 + 碰撞就绪」才允许移动，
     // 避免关闭面板后遮罩还挂着时 WASD 就让人物走起来，也避免模型加载期间走进错误碰撞体
     const canMove =
-      !paused && !this.panels.isOpen && this.world.isPointerLocked() && this.collisionReady;
+      !paused &&
+      !this.panels.isOpen &&
+      this.world.isPointerLocked() &&
+      this.collisionReady &&
+      !this.interiorLoading;
 
     // 位移与模拟时钟使用不同的单帧上限：位移限制只防穿墙，不拖慢时间
     const moveDeltaMs = Math.min(rawDelta, TIME.maxMoveDeltaMs);
@@ -388,9 +405,7 @@ export class Game {
 
     this.world.render(renderDeltaSeconds);
     this.hud.setHint(
-      paused || this.panels.isOpen || !this.collisionReady
-        ? null
-        : this.world.getNearbyBuilding(),
+      paused || this.panels.isOpen || !this.collisionReady ? null : this.currentHint(),
     );
 
     this.hudTimerMs += rawDelta;
@@ -526,7 +541,7 @@ export class Game {
   /* ---------------------------------------------------------- 鼠标锁定 */
 
   private requestPointerLock(): void {
-    if (this.panels.isOpen) return;
+    if (this.coarsePointer || this.panels.isOpen || document.hidden) return;
     this.world.requestPointerLock();
   }
 
@@ -573,6 +588,14 @@ export class Game {
       event.preventDefault();
       if (this.panels.isOpen) {
         this.closePanel();
+        return;
+      }
+      if (this.world.isIndoor()) {
+        this.leaveResidence();
+        return;
+      }
+      if (this.world.isInteriorTransitioning() || this.interiorLoading) {
+        this.toast.show('info', '住宅正在加载，请稍候');
         return;
       }
       // 碰撞/模型加载期间锁 F 交互：不能对着占位碰撞体开面板
@@ -674,7 +697,7 @@ export class Game {
     this.resetFrameBaseline();
     this.syncClockUi();
     this.syncPanelPresentation();
-    this.world.requestPointerLock();
+    this.requestPointerLock();
   }
 
   /**
@@ -695,9 +718,105 @@ export class Game {
     // ESC 菜单是全屏表现：HUD 整体让位，右侧只留城市画面
     this.hud.setMenuMode(this.panels.activePanel === 'pause');
     this.hud.setHint(
-      open || !this.collisionReady ? null : this.world.getNearbyBuilding(),
+      open || !this.collisionReady ? null : this.currentHint(),
     );
     this.updateLockOverlay();
+  }
+
+  /* ------------------------------------------------------------ 室内入口 */
+
+  /** 当前应显示的 F 提示：室内只在门口提示离开，室外沿用建筑缓存。 */
+  private currentHint():
+    | { readonly id: string; readonly name: string; readonly subtitle: string; readonly verb?: string }
+    | null {
+    if (this.world.isIndoor()) {
+      if (!this.world.canExitInterior()) return null;
+      return { id: 'interior-exit', name: '住宅', verb: '离开', subtitle: '回到晴川公寓楼外' };
+    }
+    return this.world.getNearbyBuilding();
+  }
+
+  /**
+   * 让所有在途的住宅进入请求失效。读档、新游戏与 dispose 在替换 store / 释放世界
+   * 之前调用；迟到的 `enterInterior` 结果据此跳过通知、界面同步与鼠标锁定。
+   * 这里不碰 World 的会话代次，取消室内场景仍由 `world.cancelInterior()` 负责。
+   */
+  private invalidateResidenceRequest(): void {
+    this.residenceRequest += 1;
+    this.interiorLoading = false;
+  }
+
+  /**
+   * 从晴川公寓现场进入个人住宅。
+   *
+   * 界面按钮只是入口；这里重新核对「当前现场 + 附近建筑 id + 永久居住权」，不以产权、
+   * 净资产或房价替代。加载期间锁人物移动但不暂停经济，失败保持室外可重试。
+   */
+  private async enterResidence(): Promise<void> {
+    if (this.panels.activePanel !== 'home') return;
+    if (this.world.isIndoor() || this.world.isInteriorTransitioning() || this.interiorLoading) return;
+
+    const nearby = this.world.getNearbyBuilding();
+    const residence = freeResidenceOf(this.store.state.realEstate);
+    if (
+      !nearby ||
+      nearby.interactionId !== 'home' ||
+      nearby.id !== INTERIOR.buildingId ||
+      !residence ||
+      residence.kind !== 'home' ||
+      residence.id !== INTERIOR.residenceId ||
+      residence.buildingId !== nearby.id
+    ) {
+      this.toast.show('error', '只能从晴川公寓现场进入自己的永久住所');
+      return;
+    }
+    if (!this.collisionReady) {
+      this.toast.show('info', '城市仍在加载，请稍候');
+      return;
+    }
+
+    const request = this.residenceRequest + 1;
+    this.residenceRequest = request;
+    this.interiorLoading = true;
+    this.world.clearInput();
+    this.closePanel();
+    try {
+      const result = await this.world.enterInterior(() => {
+        const still = freeResidenceOf(this.store.state.realEstate);
+        return (
+          still !== null &&
+          still.kind === 'home' &&
+          still.id === INTERIOR.residenceId &&
+          still.buildingId === INTERIOR.buildingId
+        );
+      });
+      // 读档/新游戏/dispose 已让本次请求过期：不弹提示、不同步、不抢鼠标。
+      if (request !== this.residenceRequest) return;
+      if (!result.ok) {
+        this.toast.show('error', `进入住宅失败：${result.message ?? '未知原因'}`);
+        return;
+      }
+      this.collisionReady = this.world.isCollisionReady();
+      this.toast.show('success', '已进入个人住宅。走到门口按 F 离开。');
+      this.syncPanelPresentation();
+      this.requestPointerLock();
+    } finally {
+      // 过期请求不得清掉新请求的加载锁。
+      if (request === this.residenceRequest) this.interiorLoading = false;
+    }
+  }
+
+  private leaveResidence(): void {
+    if (!this.world.isIndoor()) return;
+    if (!this.world.canExitInterior()) {
+      this.toast.show('info', '走到门口再按 F 离开住宅');
+      return;
+    }
+    this.world.exitInterior();
+    this.collisionReady = this.world.isCollisionReady();
+    this.syncPanelPresentation();
+    this.toast.show('info', '已回到晴川公寓楼外');
+    this.requestPointerLock();
   }
 
   /* -------------------------------------------------------- 入口能力检查 */
@@ -1075,6 +1194,9 @@ export class Game {
 
   private applySnapshot(snapshot: SaveSnapshot): void {
     const { world: worldData, ...gameState } = snapshot.state;
+    // 替换 store 前失效并清理旧室内会话；迟到加载结果不得把新存档拉回房间。
+    this.invalidateResidenceRequest();
+    this.world.cancelInterior();
     this.store.replace(gameState as GameState);
     this.activeShopId = null;
     this.panels.resetPersonalSession();
@@ -1125,6 +1247,8 @@ export class Game {
 
   startNewGame(): void {
     if (!window.confirm('重新开始会清空当前进度（本地存档仍保留），确定吗？')) return;
+    this.invalidateResidenceRequest();
+    this.world.cancelInterior();
     this.store.replace(createInitialState());
     this.activeShopId = null;
     this.panels.resetPersonalSession();
