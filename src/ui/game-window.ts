@@ -43,17 +43,22 @@ interface Point {
   y: number;
 }
 
+/** 窗口表现模式：普通浮动窗口 / ESC 专用全屏菜单。 */
+export type WindowPresentation = 'window' | 'pause';
+
 export class GameWindow {
   private scrim: HTMLElement | null = null;
   private win: HTMLElement | null = null;
   private railEl: HTMLElement | null = null;
   private contentEl: HTMLElement | null = null;
   private floatEl: HTMLElement | null = null;
+  private toolsEl: HTMLElement | null = null;
   private titleEl: HTMLElement | null = null;
   private kickerEl: HTMLElement | null = null;
   private subEl: HTMLElement | null = null;
   private placeEl: HTMLElement | null = null;
   private maxBtn: HTMLButtonElement | null = null;
+  private presentation: WindowPresentation = 'window';
 
   private pos: Point = { x: 0, y: 0 };
   private restored: Point | null = null;
@@ -110,6 +115,7 @@ export class GameWindow {
           <p class="gw-sub" data-gw-sub></p>
         </div>
         <div class="gw-tools">
+          <div class="gw-tools-slot" data-gw-tools></div>
           <span class="gw-place" data-gw-place hidden></span>
           <button type="button" class="gw-btn" data-gw-max aria-label="放大窗口">${icon('maximize-2', { size: 16 })}</button>
           <button type="button" class="gw-btn gw-btn-close" data-gw-close aria-label="关闭窗口">${icon('x', { size: 16 })}</button>
@@ -135,6 +141,7 @@ export class GameWindow {
     this.kickerEl = win.querySelector<HTMLElement>('[data-gw-kicker]');
     this.subEl = win.querySelector<HTMLElement>('[data-gw-sub]');
     this.placeEl = win.querySelector<HTMLElement>('[data-gw-place]');
+    this.toolsEl = win.querySelector<HTMLElement>('[data-gw-tools]');
     this.maxBtn = win.querySelector<HTMLButtonElement>('[data-gw-max]');
 
     this.setChrome(chrome);
@@ -147,6 +154,7 @@ export class GameWindow {
     const bar = win.querySelector<HTMLElement>('[data-gw-bar]');
     bar?.addEventListener('pointerdown', this.beginDrag);
     bar?.addEventListener('dblclick', (event) => {
+      if (this.presentation === 'pause') return;
       if ((event.target as HTMLElement | null)?.closest('button')) return;
       this.toggleMaximize();
     });
@@ -173,8 +181,29 @@ export class GameWindow {
     this.railEl = null;
     this.contentEl = null;
     this.floatEl = null;
+    this.toolsEl = null;
+    this.presentation = 'window';
     this.restored = null;
     this.maximized = false;
+  }
+
+  /**
+   * 切换窗口表现模式。
+   * 暂停模式只加一层类，不写入 maximized/pos，关闭后普通窗口恢复原行为。
+   */
+  setPresentation(mode: WindowPresentation): void {
+    this.presentation = mode;
+    const paused = mode === 'pause';
+    this.win?.classList.toggle('is-pause', paused);
+    this.scrim?.classList.toggle('is-pause', paused);
+  }
+
+  /** 标题栏工具区：TAB 的时间操作组挂在这里，与窗口内容分离。 */
+  setTools(node: HTMLElement | null): void {
+    const slot = this.toolsEl;
+    if (!slot) return;
+    slot.replaceChildren();
+    if (node) slot.appendChild(node);
   }
 
   setChrome(chrome: WindowChrome): void {
@@ -333,6 +362,7 @@ export class GameWindow {
   };
 
   private readonly beginDrag = (event: PointerEvent): void => {
+    if (this.presentation === 'pause') return;
     if (event.button !== 0) return;
     const target = event.target as HTMLElement | null;
     if (target?.closest('button')) return;
