@@ -722,7 +722,7 @@ AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − �
 | 层 | 位置 | 负责 | 不负责 |
 | --- | --- | --- | --- |
 | 配置 | `content/interior.ts` | 房间尺寸、门窗洞口、家具摆位与碰撞 footprint、相机范围、出入落点、资产清单 | 不建 Three.js 对象、不读业务状态 |
-| 表现 | `world/interiors/qingchuan.ts` | 程序化壳体/玄关/卫浴/厨房/软装、四类 GLB 加载、室内碰撞与相机遮挡、`dispose` | 不创建 renderer/RAF、不读写 GameState |
+| 表现 | `world/interiors/qingchuan.ts` | 程序化壳体/玄关/卫浴/厨房/软装、四类 glTF（`.gltf` + `.bin` + 贴图）加载、室内碰撞与相机遮挡、`dispose` | 不创建 renderer/RAF、不读写 GameState |
 | 会话 | `world/world.ts` | `outdoor → loading → indoor` 状态机、场景挂载、相机切换、存档快照、代次与释放 | 不读房产/资金，不判断居住权 |
 | 协调 | `app/game.ts` | 按钮回调、入口权限复核、加载锁、F 进出与提示、读档/新游戏失效 | 不建室内场景、不持有家具资源 |
 
@@ -740,8 +740,12 @@ AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − �
 ### 17.3 加载、失败与资源所有权
 
 - 加载期间保持室外画面，`Game.interiorLoading` 锁住人物移动与重复进入，但不暂停模拟。
-- 四件外部家具全部成功后才原子切换；任一 GLB 失败，`loadQingchuanInterior` 释放半成品并抛出，
+- 四件外部家具先只加载成 `{spec, model}`，**不立刻挂进场景**；`Promise.allSettled` 等四个请求全部结束后
+  才统一提交。任一失败时，连同迟到成功的模型逐个 `disposeObject(model)`，再 `disposeScene(scene)` 抛出，
   World 回到 `outdoor` 且清空回归快照，app 提示失败并允许重试。**不用方块/占位几何顶替。**
+- 单个 glTF 的清理边界：`loader.loadAsync` 拒绝时，半成品只被 loader 内部引用，由 loader 自己回收；
+  一旦 `gltf.scene` 交给本模块，之后提交阶段抛错就由本模块 `disposeObject` 负责，不要求模型已经挂进场景。
+- 只有全部成功后才把模型包进 `Group` 挂场景并登记家具碰撞；提交阶段异常同样由 `disposeScene` 兜底释放。
 - `dispose()` 遍历室内场景，用 `Set` 去重后释放 geometry / material / texture；灯光只移除。
   人物属于全局 Player，不随室内释放；城市楼体工厂与全局 renderer 的共享资源不在遍历范围内。
 - `World.dispose()` 先递增代次、取消城市视觉请求，再摘出 `player.group`、释放室内场景，
@@ -754,6 +758,9 @@ AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − �
   碰撞半径 `INTERIOR.player.collisionRadius`（0.3），不放大房间尺寸。
 - 移动碰撞与相机遮挡分开：墙体分段、家具、卫浴/厨房设施进移动碰撞；天花板与门洞封口
   只进 `interiorOccluders`，避免 2D 碰撞把整间房封死、同时让门洞保持可通行。
+- 服务区（玄关/卫浴/厨房）与卧室起居室之间有一道轻量隔断：门洞净宽 1.12m（x 1.54–2.66，高 2.05m），
+  两侧 0.04m 门框贴边、不占净宽；厨房南端 x 2.70–3.30 补短墙。1.05m 滑门扇固定全开，停在卫浴南墙外侧
+  （z≈2.49），不做门动画。门头（2.05–2.55m）只进相机遮挡；门框立柱、短墙与门扇停靠位进移动碰撞。
 - 近距第三人称相机参数集中在 `INTERIOR.camera`，`cameraProfile()` 按 `interiorMode` 切换滚轮/俯仰；
   室外仍用原有 `CAMERA`。遮挡命中时收缩到 `collisionPadding = 0.14` 前，硬下限 `0.35`，
   相机 Y 夹在 `0.3` 与 `room.height - 0.12` 之间；距离小于 `1.5m` 时隐藏人物，退出时恢复。
@@ -767,6 +774,10 @@ AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − �
   不会锁住室内移动；`loading` 仍按城市就绪状态返回，由 app 的加载锁负责。
 - 读档与 `startNewGame()` 在 `store.replace` 之前调用 `world.cancelInterior()`；
   `World.restore()` / `resetToSpawn()` / `dispose()` 也会再次失效会话，迟到回调不会把新存档拉回房间。
+- app 层另有 `residenceRequest` 代次（内存字段，不进存档）：`enterResidence` 在 await 之后与 `finally`
+  都核对当前请求；读档、新游戏、`dispose` 调用 `invalidateResidenceRequest()` 递增代次并清加载锁。
+  过期请求不弹提示、不同步界面、不请求鼠标锁定、不清新请求的 `interiorLoading`。加载完成时若面板已打开
+  或 `document.hidden`，不抢鼠标、不擅自关闭面板。World 自己的 `interiorGeneration` 保持不变，两层各管一段。
 - 室内不推进时间、不触发休息/睡眠/月结；经济模拟仍由原 RAF 的 `advanceGameTime` 按自然时间推进。
 
 ### 17.6 存档与返回

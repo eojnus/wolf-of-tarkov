@@ -115,5 +115,18 @@ export const INTERIOR = {
     entrance: { minX: 1.26, maxX: 2.06, height: 2.1 },
     window: { minX: 0.7, maxX: 2.6, minY: 0.5, maxY: 2.1 },
     bathroomDoor: { minZ: 1.35, maxZ: 2.3, height: 2.05 },
+    /**
+     * 服务区（玄关/卫浴/厨房）与卧室起居室之间的隔断门洞。
+     * 门洞净宽 1.12m；门扇固定全开，停在卫浴南墙外侧，不做门动画。
+     */
+    partition: {
+      minX: 1.54,
+      maxX: 2.66,
+      height: 2.05,
+      /** 门框立柱宽度：贴在门洞两侧，不占净宽。 */
+      post: 0.04,
+      /** 全开滑门扇宽度；停靠位置由表现层按门洞左缘计算。 */
+      leafWidth: 1.05,
+    },
   },
 } as const;

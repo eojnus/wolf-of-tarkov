@@ -86,6 +86,11 @@ export class Game {
   private liquidatePending = false;
   /** 室内加载中：锁移动与重复进入；不暂停经济模拟。 */
   private interiorLoading = false;
+  /**
+   * 住宅进入请求代次。读档、新游戏、dispose 会递增它；await 返回后只有仍是
+   * 当前请求才允许通知、同步界面与请求鼠标锁定，避免过期请求改到新会话。
+   */
+  private residenceRequest = 0;
 
   private readonly keyHandler = (event: KeyboardEvent) => this.handleKey(event);
   private readonly visibilityHandler = () => this.handleVisibility();
@@ -358,6 +363,7 @@ export class Game {
   }
 
   dispose(): void {
+    this.invalidateResidenceRequest();
     this.stop();
     this.unsubscribe();
     window.removeEventListener('keydown', this.keyHandler);
@@ -541,7 +547,7 @@ export class Game {
   /* ---------------------------------------------------------- 鼠标锁定 */
 
   private requestPointerLock(): void {
-    if (this.panels.isOpen) return;
+    if (this.panels.isOpen || document.hidden) return;
     this.world.requestPointerLock();
   }
 
@@ -725,6 +731,16 @@ export class Game {
   }
 
   /**
+   * 让所有在途的住宅进入请求失效。读档、新游戏与 dispose 在替换 store / 释放世界
+   * 之前调用；迟到的 `enterInterior` 结果据此跳过通知、界面同步与鼠标锁定。
+   * 这里不碰 World 的会话代次，取消室内场景仍由 `world.cancelInterior()` 负责。
+   */
+  private invalidateResidenceRequest(): void {
+    this.residenceRequest += 1;
+    this.interiorLoading = false;
+  }
+
+  /**
    * 从晴川公寓现场进入个人住宅。
    *
    * 界面按钮只是入口；这里重新核对「当前现场 + 附近建筑 id + 永久居住权」，不以产权、
@@ -753,6 +769,8 @@ export class Game {
       return;
     }
 
+    const request = this.residenceRequest + 1;
+    this.residenceRequest = request;
     this.interiorLoading = true;
     this.world.clearInput();
     this.closePanel();
@@ -766,6 +784,8 @@ export class Game {
           still.buildingId === INTERIOR.buildingId
         );
       });
+      // 读档/新游戏/dispose 已让本次请求过期：不弹提示、不同步、不抢鼠标。
+      if (request !== this.residenceRequest) return;
       if (!result.ok) {
         this.toast.show('error', `进入住宅失败：${result.message ?? '未知原因'}`);
         return;
@@ -773,9 +793,10 @@ export class Game {
       this.collisionReady = this.world.isCollisionReady();
       this.toast.show('success', '已进入个人住宅。走到门口按 F 离开。');
       this.syncPanelPresentation();
-      this.world.requestPointerLock();
+      this.requestPointerLock();
     } finally {
-      this.interiorLoading = false;
+      // 过期请求不得清掉新请求的加载锁。
+      if (request === this.residenceRequest) this.interiorLoading = false;
     }
   }
 
@@ -1168,8 +1189,8 @@ export class Game {
   private applySnapshot(snapshot: SaveSnapshot): void {
     const { world: worldData, ...gameState } = snapshot.state;
     // 替换 store 前失效并清理旧室内会话；迟到加载结果不得把新存档拉回房间。
+    this.invalidateResidenceRequest();
     this.world.cancelInterior();
-    this.interiorLoading = false;
     this.store.replace(gameState as GameState);
     this.activeShopId = null;
     this.panels.resetPersonalSession();
@@ -1220,8 +1241,8 @@ export class Game {
 
   startNewGame(): void {
     if (!window.confirm('重新开始会清空当前进度（本地存档仍保留），确定吗？')) return;
+    this.invalidateResidenceRequest();
     this.world.cancelInterior();
-    this.interiorLoading = false;
     this.store.replace(createInitialState());
     this.activeShopId = null;
     this.panels.resetPersonalSession();

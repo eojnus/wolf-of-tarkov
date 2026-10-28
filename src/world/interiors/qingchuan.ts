@@ -146,28 +146,29 @@ function skylineTexture(): THREE.CanvasTexture {
   return texture;
 }
 
-/** 按配置加载四类外部模型；任一失败由调用方整体回退，不用占位几何顶替。 */
+/**
+ * 按配置加载四类外部模型。模型先不挂进场景，等所有请求都结束后再统一提交；
+ * 这样任一失败时就不会有迟到的模型被追加到已经废弃的场景里。
+ */
 async function loadFurniture(
-  scene: THREE.Scene,
   spec: InteriorFurnitureSpec,
   loader: GLTFLoader,
-): Promise<void> {
+): Promise<{ spec: InteriorFurnitureSpec; model: THREE.Object3D }> {
   const gltf = await loader.loadAsync(spec.url);
   const model = gltf.scene;
-  model.traverse((child) => {
-    const mesh = child as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-  });
-
-  const group = new THREE.Group();
-  group.position.set(spec.x, 0, spec.z);
-  group.rotation.y = spec.rotationY;
-  group.add(model);
-  group.userData.assetId = spec.assetId;
-  group.userData.assetName = spec.name;
-  scene.add(group);
+  try {
+    model.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+    });
+    return { spec, model };
+  } catch (error) {
+    // loader 已把场景交给我们，后续处理失败时由本模块负责释放这部分资源。
+    disposeObject(model);
+    throw error;
+  }
 }
 
 /** 床垫与被褥：外部床架负责结构，软装用简单几何补齐干净床品。 */
@@ -446,6 +447,117 @@ function addKitchen(scene: THREE.Scene, colliders: Collider[]): void {
   }
 }
 
+/**
+ * 服务区与卧室起居室之间的轻量隔断：门框 + 门头 + 固定全开的滑门扇。
+ * 门洞本身保持 1.12m 净宽；门头只进相机遮挡，不进 2D 移动碰撞。
+ */
+function addPartition(
+  scene: THREE.Scene,
+  colliders: Collider[],
+  occluders: Collider[],
+): void {
+  const { height, wall, width } = INTERIOR.room;
+  const { partition } = INTERIOR.openings;
+  const z = 2.4;
+  const frameMat = material(COLORS.woodDark, 0.65);
+  const wallMat = material(COLORS.wall, 0.9);
+
+  // 门洞两侧立柱贴边放置，不占净宽
+  const postW = partition.post;
+  const postDepth = 0.12;
+  const westPostX = partition.minX - postW / 2;
+  const eastPostX = partition.maxX + postW / 2;
+  box(scene, postW, partition.height, postDepth, westPostX, partition.height / 2, z, frameMat);
+  box(scene, postW, partition.height, postDepth, eastPostX, partition.height / 2, z, frameMat);
+  addCollider(
+    colliders,
+    partition.minX - postW,
+    partition.minX,
+    z - postDepth / 2,
+    z + postDepth / 2,
+    partition.height,
+  );
+  addCollider(
+    colliders,
+    partition.maxX,
+    partition.maxX + postW,
+    z - postDepth / 2,
+    z + postDepth / 2,
+    partition.height,
+  );
+
+  // 厨房南端的短墙：把服务区与起居区分开，门洞以东不再直接敞开
+  const stubStart = partition.maxX + postW;
+  box(
+    scene,
+    width - stubStart,
+    height,
+    wall,
+    (stubStart + width) / 2,
+    height / 2,
+    z,
+    wallMat,
+  );
+  addCollider(colliders, stubStart, width, z - wall / 2, z + wall / 2);
+
+  // 门头：高度不足 2.05m 的部分封住；只做相机遮挡，不阻断人物移动
+  const headerW = partition.maxX - partition.minX + postW * 2;
+  box(
+    scene,
+    headerW,
+    height - partition.height,
+    wall,
+    (partition.minX + partition.maxX) / 2,
+    height - (height - partition.height) / 2,
+    z,
+    wallMat,
+  );
+  occluders.push({
+    minX: partition.minX - postW,
+    maxX: partition.maxX + postW,
+    minZ: z - wall / 2,
+    maxZ: z + wall / 2,
+    minY: partition.height,
+    maxY: height,
+  });
+
+  // 固定全开滑门：停在卫浴南墙外侧，门洞保持畅通
+  const leafX = partition.minX - postW - partition.leafWidth / 2;
+  const leafZ = z + wall / 2 + 0.03;
+  const leaf = box(
+    scene,
+    partition.leafWidth,
+    2.0,
+    0.035,
+    leafX,
+    1.0,
+    leafZ,
+    material(COLORS.wood, 0.72),
+  );
+  leaf.name = 'partition-sliding-door';
+  // 门扇停靠位也占空间：只挡这一个薄片，不额外切断走廊
+  addCollider(
+    colliders,
+    partition.minX - postW - partition.leafWidth,
+    partition.minX - postW,
+    leafZ - 0.0175,
+    leafZ + 0.0175,
+    2.0,
+  );
+  occluders.push({
+    minX: partition.minX - postW - partition.leafWidth,
+    maxX: partition.minX - postW,
+    minZ: leafZ - 0.0175,
+    maxZ: leafZ + 0.0175,
+    minY: 0,
+    maxY: 2.0,
+  });
+
+  // 顶部滑轨与门把手
+  box(scene, 2.3, 0.05, 0.06, 1.57, 2.06, leafZ, material(COLORS.metal, 0.35, 0.7));
+  box(scene, 0.025, 0.22, 0.03, partition.minX - postW - 0.08, 1.0, leafZ + 0.03, material(COLORS.metal, 0.3, 0.8));
+}
+
 function addLivingDetails(scene: THREE.Scene, colliders: Collider[]): void {
   // 地毯：床与书桌之间
   const rug = new THREE.Mesh(
@@ -524,11 +636,12 @@ function furnitureCollider(spec: InteriorFurnitureSpec): Collider {
   };
 }
 
-function disposeScene(scene: THREE.Scene): void {
+/** 释放一棵对象树可达的 geometry / material / texture；不依赖对象是否在场景里。 */
+function disposeObject(root: THREE.Object3D): void {
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
   const textures = new Set<THREE.Texture>();
-  scene.traverse((child) => {
+  root.traverse((child) => {
     const mesh = child as THREE.Mesh;
     if (mesh.geometry) geometries.add(mesh.geometry);
     const mat = mesh.material;
@@ -544,6 +657,10 @@ function disposeScene(scene: THREE.Scene): void {
   for (const geometry of geometries) geometry.dispose();
   for (const texture of textures) texture.dispose();
   for (const mat of materials) mat.dispose();
+}
+
+function disposeScene(scene: THREE.Scene): void {
+  disposeObject(scene);
   scene.clear();
 }
 
@@ -558,13 +675,44 @@ export async function loadQingchuanInterior(): Promise<InteriorRuntime> {
   addEntry(scene, colliders);
   addBathroom(scene, colliders);
   addKitchen(scene, colliders);
+  addPartition(scene, colliders, occluders);
   addLivingDetails(scene, colliders);
   addLights(scene);
 
   const loader = new GLTFLoader();
   const specs = Object.values(INTERIOR.furniture);
+  const results = await Promise.allSettled(specs.map((spec) => loadFurniture(spec, loader)));
+  const loaded = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+  const failed = results.flatMap((result, index) =>
+    result.status === 'rejected' ? [specs[index]!] : [],
+  );
+
+  if (failed.length > 0) {
+    // 所有请求都已结束：迟到的成功模型也在这里统一释放，绝不挂到已废弃的场景。
+    for (const item of loaded) disposeObject(item.model);
+    disposeScene(scene);
+    const reasons = results
+      .flatMap((result) =>
+        result.status === 'rejected'
+          ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+          : [],
+      )
+      .join('；');
+    throw new Error(
+      `室内家具加载失败（${failed.map((spec) => spec.name).join('、')}）：${reasons}`,
+    );
+  }
+
   try {
-    await Promise.all(specs.map((spec) => loadFurniture(scene, spec, loader)));
+    for (const { spec, model } of loaded) {
+      const group = new THREE.Group();
+      group.position.set(spec.x, 0, spec.z);
+      group.rotation.y = spec.rotationY;
+      group.add(model);
+      group.userData.assetId = spec.assetId;
+      group.userData.assetName = spec.name;
+      scene.add(group);
+    }
     addBedding(scene);
     for (const spec of specs) colliders.push(furnitureCollider(spec));
   } catch (error) {

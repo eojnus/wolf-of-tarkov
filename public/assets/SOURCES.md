@@ -172,6 +172,8 @@ You can use our assets for any purpose … You can redistribute them”。
 下载方式：作品页的 **glTF 1K** 包（`https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/<id>/<id>_1k.gltf`
 + 同目录 `.bin` 与 `textures/`）。落地时把 `.gltf` / `.bin` 重命名为 `<id>.gltf` / `<id>.bin`
 并同步 `buffers[].uri`，贴图保留原文件名与相对路径；**几何未做减面、未缩放、未改材质**。
+注意：这四件是「`.gltf` + `.bin` + `textures/`」的多文件 glTF，**不是单文件 GLB**，
+本文档与代码注释中的「glTF」均指这种形态。
 
 | assetId（项目内稳定标识） | Poly Haven 资产 | 作者 | 本地文件 | 用途 |
 | --- | --- | --- | --- | --- |

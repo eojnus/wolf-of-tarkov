@@ -1410,6 +1410,11 @@ S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100�
 - 不以 `owner.kind === 'player'`、净资产或房价判断居住权；进入不产生交易、扣费、房租或资产登记。
 - 世界加载完成、提交切换前，`World.enterInterior(validate?)` 再调用一次 app 提供的校验回调；
   返回 `false` 时释放已加载场景、回到室外并返回 `{ ok: false, message }`。
+- app 层请求代次 `Game.residenceRequest`：`enterResidence` 开始时取号，await 之后、通知、界面同步、
+  请求鼠标锁定与 `finally` 都先核对仍是当前请求。读档、新游戏与 `dispose` 调用
+  `invalidateResidenceRequest()` 递增代次并清 `interiorLoading`；过期请求不得弹提示、不得清掉
+  新请求的加载锁，也不得把刚刚打开的面板关掉或抢鼠标。
+- 加载完成时若 `panels.isOpen` 或 `document.hidden`，不调用 `requestPointerLock()`，画面与面板保持现状。
 
 ### 状态机
 
@@ -1438,6 +1443,9 @@ S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100�
 - 室内碰撞是独立的 2D AABB 列表 `interiorColliders`；`update()` 在 `indoor` 只使用它和
   `interiorBounds`，不覆盖城市 `handles/colliders`。门的可通行性由墙体分段碰撞保证，
   天花板与门洞封口只进相机遮挡列表 `interiorOccluders`。
+- 服务区与卧室起居室之间必须有可关闭的界限：门洞净宽 1.12m（x 1.54–2.66）、高 2.05m，
+  两侧 0.04m 门框不占净宽，厨房南端 x 2.70–3.30 补短墙；1.05m 滑门扇固定全开停在卫浴南墙外侧
+  （z≈2.49），不新增门动画系统。门头（2.05–2.55m）只进相机遮挡，门框、短墙与门扇停靠位进移动碰撞。
 - 人物碰撞半径取 `INTERIOR.player.collisionRadius = 0.3`，边界余量取 `PLAYER.radius`（0.42）；
   室外仍用 `PLAYER.radius = 0.42` 与 `PLAYER_EDGE_MARGIN = 1.5`，默认参数不变。
 - 相机距离、俯仰、灵敏度、滚轮、跟随速率、目标高度与遮挡间隙全部在 `INTERIOR.camera`；
@@ -1454,15 +1462,19 @@ S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100�
   加载中/室内调用 `getSaveData()` 一律返回该快照，所以手动保存、自动保存与导出都会回到楼外。
 - 不新增 `world.location/residenceId` 字段，不改 `SAVE.formatVersion = 19`、`WorldSaveData`
   结构或迁移链；再次进入时固定布局不变。
-- 读档与 `startNewGame()` 在 `store.replace` 之前调用 `world.cancelInterior()` 并清 `interiorLoading`；
-  `World.restore()` / `resetToSpawn()` / `dispose()` 也会再调用一次 `cancelInterior()`。
+- 读档与 `startNewGame()` 在 `store.replace` 之前调用 `invalidateResidenceRequest()` 与 `world.cancelInterior()`，
+  再清 `interiorLoading`；`World.restore()` / `resetToSpawn()` / `dispose()` 也会再调用一次 `cancelInterior()`，
+  `Game.dispose()` 同时递增 app 请求代次。
 - 室内不推进时间、不触发月结/休息/睡眠；经济仍由原 RAF 的 `advanceGameTime` 正常推进。
 
 ### 资源生命周期
 
 - 室内模块只在点击进入后 `await import('./interiors/qingchuan')`；启动、靠近建筑、打开菜单都不 preload。
-- 四件家具失败任一件则整次进入失败：`loadQingchuanInterior` 在 `catch` 中释放半成品后抛出，
+- 四件家具先只加载成 `{spec, model}`，`Promise.allSettled` 等四个请求全部结束后再统一提交；
+  任一失败则连同迟到成功的模型逐个 `disposeObject(model)` 并释放场景后抛出，
   `World` 保持室外、`outdoorSnapshot` 清空，可再次重试；不使用方块/占位几何顶替。
+- 单个 glTF 的边界：`loadAsync` 拒绝时半成品只由 loader 持有，loader 自行回收；`gltf.scene`
+  一旦交给模块，后续处理失败就由模块 `disposeObject` 释放，不依赖对象是否已挂进场景。
 - 退出或取消时 `dispose()` 遍历室内场景，按 `Set` 去重释放 geometry/material/texture，
   灯光只移除不释放资源；不触碰 `player.group`、城市楼体工厂或 renderer。
 - `World.dispose()` 先递增代次、取消城市视觉请求，再摘出 `player.group`、释放室内场景，
