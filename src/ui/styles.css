@@ -827,6 +827,8 @@ select.field {
   top: 0 !important;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
+  max-height: none;
   min-width: 0;
   min-height: 0;
   border: none;
@@ -879,6 +881,62 @@ select.field {
 
 .gw.is-pause .gw-tools-slot {
   display: none;
+}
+
+/* ESC 操作区：左侧原栏目层级不变，只把动作换成大按钮。
+   两列网格承载「存档」四项，单个动作（继续 / 重新开始）占满整行。 */
+.gw.is-pause .actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
+.gw.is-pause .actions > :only-child {
+  grid-column: 1 / -1;
+}
+
+.gw.is-pause .btn {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 18px;
+  border-radius: var(--r-md);
+  font-size: 14.5px;
+  line-height: 1.25;
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+}
+
+.gw.is-pause .btn-primary {
+  min-height: 52px;
+  justify-content: center;
+  font-size: 16px;
+  text-align: center;
+}
+
+.gw.is-pause .gw-nav-item {
+  min-height: 48px;
+  padding: 0 14px;
+  border-radius: var(--r-sm);
+  font-size: 14.5px;
+}
+
+.gw.is-pause .gw-nav-head {
+  padding: 0 14px 8px;
+  font-size: 12px;
+}
+
+.gw.is-pause .gw-nav-group + .gw-nav-group {
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.gw.is-pause .gw-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-sm);
+  border-color: var(--line);
 }
 
 .gw-bar {
@@ -2827,10 +2885,14 @@ select.field {
 }
 
 @media (max-width: 900px) {
+  /* 窄屏普通窗口：解除 420px 最小高度，按可用视口与安全区约束，内容在窗口内滚动 */
   .gw {
-    width: calc(100vw - 20px);
+    width: calc(100vw - 20px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
     height: calc(100vh - 20px);
+    height: calc(100dvh - 20px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 20px);
     min-width: 0;
+    min-height: 0;
   }
 
   .gw-rail {
@@ -2901,8 +2963,8 @@ select.field {
   }
 
   .gw.is-pause .gw-rail {
-    width: 136px;
-    padding: 6px 6px 12px 12px;
+    width: 148px;
+    padding: 6px 6px 12px 10px;
   }
 
   .gw.is-pause .gw-work {
@@ -2923,7 +2985,8 @@ select.field {
   }
 }
 
-/* 触屏 / 粗指针：显示「界面」入口，隐藏鼠标锁定遮罩与键鼠操作提示 */
+/* 触屏 / 粗指针：显示「界面」入口，隐藏鼠标锁定遮罩与键鼠操作提示；
+   同时把必要控件的实际点击范围抬到至少 44px —— 只改热区，不缩小可见内容。 */
 @media (pointer: coarse) {
   .hud-touch {
     display: flex;
@@ -2936,10 +2999,100 @@ select.field {
   .hint-text {
     display: none;
   }
+
+  .btn {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 14px;
+  }
+
+  .btn-sm {
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  .field,
+  select.field {
+    min-height: 44px;
+  }
+
+  .gw-nav-item {
+    min-height: 44px;
+    padding: 0 10px;
+  }
+
+  .gw-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .gw-tool {
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  .gw-time-tools {
+    gap: 4px;
+    padding: 2px;
+  }
+
+  .gw-tools-slot,
+  .gw-time-tools {
+    flex-wrap: wrap;
+  }
+
+  /* 标题栏允许换行：工具栏放不下时整行落到标题下方，关闭按钮不被挤出 */
+  .gw-bar {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .gw-ident {
+    flex: 1 1 180px;
+  }
+
+  .gw-tools {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .hud-actions .btn {
+    min-height: 44px;
+  }
+
+  .sec-switch-item,
+  .pp-subnav-item {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 14px;
+  }
+
+  .gw.is-pause .gw-bar {
+    padding: 18px 20px 4px;
+  }
 }
 
-/* 手机横屏等矮视口：压缩菜单纵向留白，保证操作按钮可点 */
+@media (pointer: coarse) and (max-width: 780px) {
+  /* 更窄的手机横屏：时间工具整行落到标题下方，且不压缩触控热区 */
+  .gw-tools {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* 手机横屏等矮视口：解除最小高度，普通窗口也按可用视口收缩并内部滚动；
+   ESC 的 100dvh 全屏表现由更高优先级规则保持。 */
 @media (max-height: 560px) {
+  .gw {
+    height: calc(100vh - 16px);
+    height: calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 16px);
+    min-height: 0;
+  }
+
   .gw.is-pause .gw-bar {
     padding: 14px 18px 2px;
   }
