@@ -1,0 +1,144 @@
+[
+  {
+    "name": "boot",
+    "value": "暂无本地存档，请开始新游戏。"
+  },
+  {
+    "name": "page.hidden",
+    "value": {
+      "hidden": false,
+      "vis": "visible"
+    }
+  },
+  {
+    "name": "lockOverlayForcedHiddenForScreenshot",
+    "value": false
+  },
+  {
+    "name": "baseline.clockRuns",
+    "value": {
+      "b1": "08:11",
+      "b2": "08:15",
+      "runs": true
+    }
+  },
+  {
+    "name": "tabToolsPresent",
+    "value": true
+  },
+  {
+    "name": "tabToolLabels",
+    "value": [
+      "暂停",
+      "1×",
+      "2×",
+      "4×",
+      "休息 1 小时",
+      "睡到早上"
+    ]
+  },
+  {
+    "name": "tabSections",
+    "value": 12
+  },
+  {
+    "name": "tabActivePanel",
+    "value": "人物总览"
+  },
+  {
+    "name": "manualPause.frozen",
+    "value": {
+      "p1": "08:30",
+      "p2": "08:30",
+      "frozen": true
+    }
+  },
+  {
+    "name": "manualPause.toolLabel",
+    "value": "继续"
+  },
+  {
+    "name": "afterTabClose.panelOpen",
+    "value": false
+  },
+  {
+    "name": "manualPauseSurvivesTabClose",
+    "value": {
+      "q1": "08:30",
+      "q2": "08:30",
+      "stillFrozen": true
+    }
+  },
+  {
+    "name": "escOpen",
+    "value": true
+  },
+  {
+    "name": "escSections",
+    "value": [
+      "保存与菜单",
+      "游戏信息"
+    ]
+  },
+  {
+    "name": "escPausePresentation",
+    "value": {
+      "w": 1440,
+      "h": 900,
+      "radius": "0px"
+    }
+  },
+  {
+    "name": "escPausedClock",
+    "value": {
+      "e1": "08:30",
+      "e2": "08:30",
+      "frozen": true
+    }
+  },
+  {
+    "name": "manualPauseSurvivesEscClose",
+    "value": {
+      "r1": "08:30",
+      "r2": "08:30",
+      "stillFrozen": true,
+      "panelOpen": false
+    }
+  },
+  {
+    "name": "resume.clockRuns",
+    "value": {
+      "s1": "08:31",
+      "s2": "08:35",
+      "runs": true
+    }
+  },
+  {
+    "name": "esc.spaceStillOpen",
+    "value": true
+  },
+  {
+    "name": "esc.spaceDidNotChangeManualState",
+    "value": {
+      "t1": "08:35",
+      "t2": "08:40",
+      "runs": true
+    }
+  },
+  {
+    "name": "touch.pointerCoarse",
+    "value": true
+  },
+  {
+    "name": "touch.entryVisible",
+    "value": true
+  },
+  {
+    "name": "touch.lockOverlayHidden",
+    "value": true
+  },
+  {
+    "name": "touch.escOpen",
+    "value": true
+  }
+]
