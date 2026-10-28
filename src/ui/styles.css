@@ -1,54 +1,65 @@
 /* 塔科夫之狼 · 界面样式
-   方向：现代、清爽、亲和的城巿生活与经营界面。
-   雾白／浅灰蓝的浮动管理窗口，蓝绿只作为克制的强调色；深石墨蓝只用于股票绘图区。
-   透明与模糊只出现在 HUD 与浮层边缘，管理窗口本身保持不透明，优先保证中文与数字清晰。 */
+   方向：石墨灰的低饱和城市经营界面。
+   五级石墨底色承载层级，单一低饱和蓝绿只用于选中、焦点与主操作；
+   涨跌/危险语义色保留，但必须与数字或文字同时出现。
+   透明与模糊只出现在 HUD 与菜单遮罩，管理窗口保持高不透明，优先保证中文与数字清晰。
+
+   Constraints
+   FONT    Segoe UI / PingFang SC (system only)
+   STYLE   GRAPHITE MINIMAL
+   MODE    DARK
+   ACCENT  #4FB3C4  (single)
+   RADIUS  14 / 10 / 8 / 999
+   SPACING 4pt grid, 8pt rhythm
+   MOTION  120ms hover, 180ms panel
+   BLUR    HUD 10px, menu 0, windows 0 */
 
 :root {
   /* 底板与文字 */
-  --paper: #f5f7fa;
-  --paper-2: #edf1f6;
-  --card: #ffffff;
-  --ink: #1e2a33;
-  --ink-2: #4c5b6a;
-  --ink-3: #7e8d9b;
-  --ink-4: #a3b0bd;
+  --paper: #151b21;
+  --paper-2: #10151a;
+  --card: #1b222a;
+  --ink: #e8eef3;
+  --ink-2: #b3c0cb;
+  --ink-3: #8b99a6;
+  --ink-4: #64717d;
 
   /* 线条 */
-  --line: #e1e7ef;
-  --line-2: #cbd6e2;
+  --line: #252e38;
+  --line-2: #33404c;
 
-  /* 强调：蓝绿 */
-  --teal: #2b7c8f;
-  --teal-deep: #226473;
-  --teal-soft: #e7f2f5;
-  --teal-line: #b9d8e0;
+  /* 强调：唯一蓝绿 */
+  --teal: #4fb3c4;
+  --teal-deep: #7ed3e0;
+  --teal-soft: rgba(79, 179, 196, 0.14);
+  --teal-line: rgba(79, 179, 196, 0.34);
 
   /* 语义色：涨跌遵循国内习惯（涨红跌绿），并且始终与数字、文字同时出现 */
-  --up: #bf5340;
-  --down: #2c8768;
-  --pos: #2c8768;
-  --neg: #bf5340;
-  --warn: #a1741f;
-  --warn-soft: #fbf3e2;
-  --danger: #b0453f;
-  --danger-soft: #fbeeed;
+  --up: #e07363;
+  --down: #4fb08a;
+  --pos: #4fb08a;
+  --neg: #e07363;
+  --warn: #c9a04a;
+  --warn-soft: rgba(201, 160, 74, 0.14);
+  --danger: #e08078;
+  --danger-soft: rgba(224, 128, 120, 0.14);
 
   /* 图形区 */
-  --chart-bg: #232f3c;
-  --chart-bg-2: #1c2733;
+  --chart-bg: #121a22;
+  --chart-bg-2: #0e151b;
   --chart-grid: rgba(255, 255, 255, 0.07);
   --chart-axis: rgba(255, 255, 255, 0.42);
   --chart-up: #e07363;
   --chart-down: #4fb08a;
 
   /* 形状 */
-  --r-lg: 18px;
-  --r-md: 12px;
+  --r-lg: 14px;
+  --r-md: 10px;
   --r-sm: 8px;
   --r-pill: 999px;
-  --sh-window: 0 28px 72px rgba(22, 40, 58, 0.24), 0 2px 10px rgba(22, 40, 58, 0.1);
-  --sh-card: 0 1px 2px rgba(22, 40, 58, 0.05);
-  --sh-hud: 0 8px 24px rgba(18, 32, 46, 0.16);
+  --sh-window: 0 28px 64px rgba(0, 0, 0, 0.55), 0 1px 0 rgba(255, 255, 255, 0.05);
+  --sh-card: 0 1px 0 rgba(255, 255, 255, 0.03);
+  --sh-hud: 0 10px 28px rgba(0, 0, 0, 0.45);
 
   --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Hiragino Sans GB",
     "Source Han Sans SC", system-ui, -apple-system, sans-serif;
@@ -104,10 +115,30 @@ body {
   pointer-events: none;
 }
 
+/* 图层顺序固定：HUD 在窗口之下，提示在最上；避免 HUD 的局部 z-index 压过模态窗口 */
+#hud-layer {
+  z-index: 1;
+}
+
+#panel-layer {
+  z-index: 2;
+}
+
+#toast-layer {
+  z-index: 3;
+}
+
 #hud-layer > *,
 #panel-layer > *,
 #toast-layer > * {
   pointer-events: auto;
+}
+
+/* ESC 菜单期间整体让位：菜单是全屏表现，HUD 不应压在菜单与城市画面之上 */
+#hud-layer.is-menu > * {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
 }
 
 button,
@@ -141,12 +172,13 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  min-height: 34px;
   border: 1px solid var(--line-2);
   background: var(--card);
   color: var(--ink);
-  padding: 8px 13px;
+  padding: 8px 14px;
   border-radius: var(--r-sm);
-  font-size: 14px;
+  font-size: 13.5px;
   line-height: 1.3;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
@@ -154,29 +186,38 @@ textarea {
 }
 
 .btn:hover:not(:disabled) {
-  background: var(--paper-2);
+  background: #222a33;
   border-color: var(--ink-4);
 }
 
 .btn:active:not(:disabled) {
-  background: var(--paper-2);
+  background: #2b343e;
+}
+
+.btn:focus-visible,
+.gw-btn:focus-visible,
+.gw-nav-item:focus-visible,
+.gw-tool:focus-visible,
+.hud-touch-btn:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
 }
 
 .btn:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
 .btn-primary {
   background: var(--teal);
   border-color: var(--teal);
-  color: #f7fcfd;
+  color: #0e141a;
   font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--teal-deep);
-  border-color: var(--teal-deep);
+  background: #6ec6d4;
+  border-color: #6ec6d4;
 }
 
 .btn-ghost {
@@ -186,7 +227,7 @@ textarea {
 }
 
 .btn-ghost:hover:not(:disabled) {
-  background: var(--paper-2);
+  background: #222a33;
   border-color: transparent;
   color: var(--ink);
 }
@@ -198,9 +239,21 @@ textarea {
   font-weight: 600;
 }
 
+.btn-danger {
+  background: transparent;
+  border-color: rgba(224, 128, 120, 0.45);
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
 .btn-sm {
+  min-height: 28px;
   padding: 5px 10px;
-  font-size: 13px;
+  font-size: 12.5px;
   border-radius: 7px;
 }
 
@@ -221,7 +274,7 @@ textarea {
 .field:focus {
   outline: none;
   border-color: var(--teal);
-  box-shadow: 0 0 0 3px rgba(43, 124, 143, 0.12);
+  box-shadow: 0 0 0 3px rgba(79, 179, 196, 0.16);
 }
 
 .field::placeholder {
@@ -293,20 +346,20 @@ select.field {
 
 .badge.off {
   color: var(--warn);
-  border-color: #e6d5ae;
+  border-color: rgba(201, 160, 74, 0.4);
   background: var(--warn-soft);
 }
 
 .badge.neg {
   color: var(--danger);
-  border-color: #e8c9c6;
+  border-color: rgba(224, 128, 120, 0.4);
   background: var(--danger-soft);
 }
 
 .badge.pos {
   color: var(--pos);
-  border-color: #bfdccd;
-  background: #edf7f2;
+  border-color: rgba(79, 176, 138, 0.4);
+  background: rgba(79, 176, 138, 0.14);
 }
 
 .divider {
@@ -337,7 +390,6 @@ select.field {
 
 .hud-time,
 .hud-money,
-.hud-controls,
 .hud-actions,
 .hud-hint,
 .hint-text {
@@ -345,11 +397,11 @@ select.field {
 }
 
 .card {
-  background: rgba(250, 252, 254, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(21, 27, 33, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: var(--r-md);
   box-shadow: var(--sh-hud);
-  backdrop-filter: blur(12px) saturate(1.05);
+  backdrop-filter: blur(10px) saturate(1.05);
   color: var(--ink);
 }
 
@@ -424,7 +476,7 @@ select.field {
 
 .mode-chip.sprint {
   color: var(--warn);
-  border-color: #e2d0a6;
+  border-color: rgba(201, 160, 74, 0.45);
   background: var(--warn-soft);
 }
 
@@ -551,12 +603,12 @@ select.field {
   gap: 9px;
   padding: 8px 16px;
   border-radius: var(--r-pill);
-  background: rgba(250, 252, 254, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.8);
+  background: rgba(21, 27, 33, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: var(--sh-hud);
   font-size: 14px;
   white-space: nowrap;
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(10px);
 }
 
 .hud-hint[hidden] {
@@ -583,25 +635,6 @@ select.field {
   font-size: 13px;
 }
 
-.hud-controls {
-  position: absolute;
-  left: 16px;
-  bottom: 16px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 7px;
-}
-
-.hud-controls .divider {
-  height: 18px;
-}
-
-.hud-controls.locked {
-  opacity: 0.45;
-  pointer-events: none;
-}
-
 .hud-actions {
   position: absolute;
   right: 16px;
@@ -624,6 +657,61 @@ select.field {
 
 .hud-actions .save-state.error {
   color: var(--danger);
+}
+
+/* 触屏「界面」入口：只替代菜单可达性，不实现移动/视角触控 */
+.hud-touch {
+  display: none;
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-touch-btn {
+  min-width: 44px;
+  height: 44px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(21, 27, 33, 0.94);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: var(--sh-hud);
+  cursor: pointer;
+}
+
+.hud-touch-btn[aria-expanded='true'] {
+  border-color: var(--teal-line);
+  color: var(--teal-deep);
+}
+
+.hud-touch-menu {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--r-md);
+  background: rgba(21, 27, 33, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: var(--sh-hud);
+}
+
+.hud-touch-menu[hidden] {
+  display: none;
+}
+
+.hud-touch-menu .btn {
+  min-height: 40px;
+  padding: 8px 12px;
 }
 
 .hint-text {
@@ -658,10 +746,10 @@ select.field {
   padding: 24px 30px 22px;
   text-align: center;
   border-radius: var(--r-lg);
-  background: rgba(250, 252, 254, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.8);
+  background: rgba(21, 27, 33, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: var(--sh-window);
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(10px);
 }
 
 .lock-title {
@@ -732,6 +820,67 @@ select.field {
   cursor: grabbing;
 }
 
+/* ESC 菜单：暂停专用全屏表现模式。
+   只改变这一种打开方式的外观，不改普通窗口的位置、放大与层级状态。 */
+.gw.is-pause {
+  left: 0 !important;
+  top: 0 !important;
+  width: 100vw;
+  height: 100vh;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  transform: none;
+  background: linear-gradient(
+    100deg,
+    rgba(13, 18, 23, 0.97) 0%,
+    rgba(13, 18, 23, 0.94) 40%,
+    rgba(13, 18, 23, 0.72) 58%,
+    rgba(13, 18, 23, 0.2) 74%,
+    rgba(13, 18, 23, 0) 84%
+  );
+  box-shadow: none;
+}
+
+.gw-scrim.is-pause {
+  background: rgba(10, 14, 18, 0.08);
+}
+
+.gw.is-pause .gw-bar {
+  background: transparent;
+  border-bottom: none;
+  padding: 44px 48px 6px;
+  cursor: default;
+}
+
+.gw.is-pause .gw-main {
+  padding-bottom: 48px;
+}
+
+.gw.is-pause .gw-rail {
+  width: 208px;
+  padding: 10px 8px 16px 40px;
+  background: transparent;
+  border-right: none;
+}
+
+.gw.is-pause .gw-work {
+  max-width: 640px;
+}
+
+.gw.is-pause .gw-scroll {
+  padding: 14px 40px 40px 8px;
+}
+
+.gw.is-pause .gw-tools [data-gw-max] {
+  display: none;
+}
+
+.gw.is-pause .gw-tools-slot {
+  display: none;
+}
+
 .gw-bar {
   flex: none;
   display: flex;
@@ -786,6 +935,8 @@ select.field {
   align-items: center;
   gap: 6px;
   flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .gw-place {
@@ -801,6 +952,60 @@ select.field {
 
 .gw-place[hidden] {
   display: none;
+}
+
+/* TAB 标题栏的时间工具区：与窗口内容分离，不进入栏目导航 */
+.gw-tools-slot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gw-time-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--paper-2);
+}
+
+.gw-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.gw-tool:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+}
+
+.gw-tool.is-active {
+  background: var(--teal-soft);
+  border-color: var(--teal-line);
+  color: var(--teal-deep);
+  font-weight: 600;
+}
+
+.gw-tool-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+  margin: 0 2px;
 }
 
 .gw-btn {
@@ -885,7 +1090,7 @@ select.field {
 }
 
 .gw-nav-item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.05);
   color: var(--ink);
 }
 
@@ -933,7 +1138,7 @@ select.field {
 .gw-scroll::-webkit-scrollbar-thumb,
 .gw-float ::-webkit-scrollbar-thumb,
 .gw-rail::-webkit-scrollbar-thumb {
-  background: #c9d3de;
+  background: #2f3b47;
   border-radius: 4px;
 }
 
@@ -970,26 +1175,26 @@ select.field {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(176px, 1fr));
+  gap: 8px;
 }
 
 .stat {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  padding: 10px 13px;
-  box-shadow: var(--sh-card);
+  padding: 9px 12px;
+  box-shadow: none;
 }
 
 .stat .stat-label {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--ink-3);
 }
 
 .stat .stat-value {
-  margin-top: 3px;
-  font-size: 18px;
+  margin-top: 2px;
+  font-size: 16px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1.3;
@@ -1084,7 +1289,7 @@ select.field {
 }
 
 .note.warn {
-  border-left-color: #dfbf82;
+  border-left-color: rgba(201, 160, 74, 0.5);
   background: var(--warn-soft);
   color: var(--warn);
 }
@@ -1100,7 +1305,7 @@ select.field {
   font-size: 13px;
   border: 1px dashed var(--line-2);
   border-radius: var(--r-md);
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .meter,
@@ -1336,7 +1541,7 @@ select.field {
   color: var(--ink-3);
   border: 1px dashed var(--line-2);
   border-radius: var(--r-sm);
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .pp-todos {
@@ -1365,7 +1570,7 @@ select.field {
 }
 
 .pp-todo.warn {
-  border-left-color: #dfbf82;
+  border-left-color: rgba(201, 160, 74, 0.5);
 }
 
 .pp-todo.danger {
@@ -1447,12 +1652,12 @@ select.field {
 
 .pp-tag.pos {
   color: var(--pos);
-  border-color: #bfdccd;
+  border-color: rgba(79, 176, 138, 0.4);
 }
 
 .pp-tag.neg {
   color: var(--neg);
-  border-color: #e8c9c6;
+  border-color: rgba(224, 128, 120, 0.4);
 }
 
 .pp-pager {
@@ -1509,7 +1714,7 @@ select.field {
 .pp-stale {
   padding: 6px 10px;
   border-radius: var(--r-sm);
-  border: 1px solid #e6d5ae;
+  border: 1px solid rgba(201, 160, 74, 0.42);
   background: var(--warn-soft);
   color: var(--warn);
   font-size: 12.5px;
@@ -1623,7 +1828,7 @@ select.field {
 }
 
 .sec-switch-item:hover:not(.is-active) {
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .sec-switch-item.is-active {
@@ -2491,21 +2696,21 @@ select.field {
   border-radius: var(--r-sm);
   font-size: 13.5px;
   line-height: 1.5;
-  background: rgba(250, 252, 254, 0.97);
+  background: rgba(27, 34, 42, 0.97);
   border: 1px solid var(--line-2);
   color: var(--ink);
-  box-shadow: 0 10px 26px rgba(18, 32, 46, 0.18);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
   animation: toast-in 0.16s ease;
   backdrop-filter: blur(10px);
 }
 
 .toast.success {
-  border-color: #bfdccd;
-  color: #24614d;
+  border-color: rgba(79, 176, 138, 0.42);
+  color: var(--pos);
 }
 
 .toast.error {
-  border-color: #e8c9c6;
+  border-color: rgba(224, 128, 120, 0.42);
   color: var(--danger);
 }
 
@@ -2583,6 +2788,32 @@ select.field {
   min-height: 16px;
 }
 
+/* 启动页保持原有浅色外观：全局石墨令牌反转后，这里显式恢复深色文字与浅色按钮 */
+#boot-screen .boot-card,
+#boot-screen .boot-card h1 {
+  color: #1e2a33;
+}
+
+#boot-screen .boot-sub {
+  color: #4c5b6a;
+}
+
+#boot-screen .boot-hint {
+  color: #7e8d9b;
+}
+
+#boot-screen .boot-card .btn {
+  background: #ffffff;
+  border-color: #cbd6e2;
+  color: #1e2a33;
+}
+
+#boot-screen .boot-card .btn-primary {
+  background: #2b7c8f;
+  border-color: #2b7c8f;
+  color: #f7fcfd;
+}
+
 /* --------------------------------------------------------------- 响应式 */
 
 @media (max-width: 1100px) {
@@ -2640,12 +2871,6 @@ select.field {
     font-size: 22px;
   }
 
-  .hud-controls {
-    left: 8px;
-    bottom: 8px;
-    padding: 5px;
-  }
-
   .hud-actions {
     right: 8px;
     bottom: 8px;
@@ -2664,6 +2889,67 @@ select.field {
 
   .shop-item {
     flex-wrap: wrap;
+  }
+
+  /* 窄屏 / 手机横屏：菜单回到整屏不透明，操作列占满宽度 */
+  .gw.is-pause {
+    background: rgba(13, 18, 23, 0.96);
+  }
+
+  .gw.is-pause .gw-bar {
+    padding: 20px 18px 4px;
+  }
+
+  .gw.is-pause .gw-rail {
+    width: 136px;
+    padding: 6px 6px 12px 12px;
+  }
+
+  .gw.is-pause .gw-work {
+    max-width: none;
+  }
+
+  .gw.is-pause .gw-scroll {
+    padding: 8px 16px 20px 4px;
+  }
+
+  .gw-time-tools {
+    gap: 2px;
+  }
+
+  .gw-tool {
+    padding: 4px 7px;
+    font-size: 12px;
+  }
+}
+
+/* 触屏 / 粗指针：显示「界面」入口，隐藏鼠标锁定遮罩与键鼠操作提示 */
+@media (pointer: coarse) {
+  .hud-touch {
+    display: flex;
+  }
+
+  .lock-overlay {
+    display: none !important;
+  }
+
+  .hint-text {
+    display: none;
+  }
+}
+
+/* 手机横屏等矮视口：压缩菜单纵向留白，保证操作按钮可点 */
+@media (max-height: 560px) {
+  .gw.is-pause .gw-bar {
+    padding: 14px 18px 2px;
+  }
+
+  .gw.is-pause .gw-main {
+    padding-bottom: 12px;
+  }
+
+  .gw.is-pause .gw-scroll {
+    padding: 6px 16px 16px 4px;
   }
 }
 

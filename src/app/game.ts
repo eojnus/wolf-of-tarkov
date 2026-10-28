@@ -70,6 +70,9 @@ export class Game {
   private readonly unsubscribe: () => void;
 
   private hiddenPaused = false;
+  /** 触屏/粗指针：没有鼠标锁定语义，锁定遮罩与指针锁请求都不参与表现。 */
+  private readonly coarsePointer =
+    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
   /** 模拟时间的余量（游戏分钟，小数部分）。不足一分钟不推进，余量保留。 */
   private simAccumulator = 0;
   private lastFrameMs = 0;
@@ -135,21 +138,6 @@ export class Game {
     this.collisionReady = this.world.isCollisionReady();
 
     this.hud = new Hud(elements.hudRoot, {
-      onSetSpeed: (speed) => {
-        this.commands.setSpeed(speed);
-        this.syncClockUi();
-      },
-      onTogglePause: () => {
-        this.handleTogglePause();
-      },
-      onRest: (minutes) => {
-        this.commands.rest(minutes);
-        this.syncClockUi();
-      },
-      onSleep: () => {
-        this.commands.sleepUntilMorning();
-        this.syncClockUi();
-      },
       onOpenFinance: () => this.togglePanel('personal'),
       onOpenPause: () => this.togglePanel('pause'),
       onSave: () => {
@@ -161,6 +149,11 @@ export class Game {
     this.panels = new PanelManager(elements.panelRoot, {
       onClose: () => this.closePanel(),
       onResume: () => this.resumeFromPause(),
+      onTogglePause: () => this.handleTogglePause(),
+      onSetSpeed: (speed) => {
+        this.commands.setSpeed(speed);
+        this.syncClockUi();
+      },
       onHire: (jobId?: string) => {
         if (!this.guardEntry('employment')) return;
         this.commands.hire(jobId);
@@ -501,7 +494,8 @@ export class Game {
 
   private syncClockUi(): void {
     const clock = this.store.state.clock;
-    this.hud.syncSpeed(this.isPaused(), clock.speed);
+    // 时间工具区在 TAB 标题栏；未打开 TAB 时由 PanelManager 内部安全短路
+    this.panels.syncTimeTools(clock.paused, clock.speed);
   }
 
   private handleVisibility(): void {
@@ -548,7 +542,12 @@ export class Game {
   }
 
   private updateLockOverlay(): void {
-    const shouldShow = this.started && !this.panels.isOpen && !this.world.isPointerLocked();
+    // 触屏/粗指针没有鼠标锁定语义：遮罩只会在全屏挡住「界面」入口
+    const shouldShow =
+      this.started &&
+      !this.coarsePointer &&
+      !this.panels.isOpen &&
+      !this.world.isPointerLocked();
     this.hud.setLockOverlay(shouldShow);
   }
 
@@ -612,6 +611,8 @@ export class Game {
 
     if (event.code === 'Space') {
       event.preventDefault();
+      // 面板/菜单打开时不允许用空格改底层手动暂停：可见状态与真实状态必须一致
+      if (this.panels.isOpen) return;
       this.handleTogglePause();
     }
   }
@@ -642,31 +643,27 @@ export class Game {
   private openPanel(id: PanelId): void {
     // 商店购买上下文只属于便利店面板；打开其它面板即失效
     if (id !== 'shop') this.activeShopId = null;
-    // 从暂停菜单切换到其他面板时，必须先解除暂停，否则会出现「面板可点但模拟停着」
-    if (this.panels.activePanel === 'pause' && id !== 'pause') {
-      this.commands.setPaused(false);
-    }
+    // 菜单暂停只由「当前面板是 pause」表达，不再改写 clock.paused。
+    // 先挂面板再释放鼠标：解锁回调看到面板已打开，不会二次打开菜单。
     this.world.clearInput();
-    this.world.exitPointerLock();
     this.panels.open(id, buildViewModel(this.store.state));
+    this.world.exitPointerLock();
     if (id === 'pause') {
-      this.commands.setPaused(true);
       this.pauseOpenedAt = performance.now();
+      this.resetFrameBaseline();
     }
     this.syncClockUi();
     this.syncPanelPresentation();
   }
 
   private closePanel(): void {
-    const wasPause = this.panels.activePanel === 'pause';
     // 关闭任何面板都结束商店购买上下文
     this.activeShopId = null;
     // 先清空移动与疾跑输入：遮罩还在时按过的键不能残留到恢复之后
     this.world.clearInput();
     this.panels.close();
-    if (wasPause) {
-      this.commands.setPaused(false);
-    }
+    // 离开菜单后从当前帧重新计时：暂停期间的停留时间不补算
+    this.resetFrameBaseline();
     this.syncClockUi();
     this.syncPanelPresentation();
   }
@@ -674,10 +671,18 @@ export class Game {
   private resumeFromPause(): void {
     this.world.clearInput();
     this.panels.close();
-    this.commands.setPaused(false);
+    this.resetFrameBaseline();
     this.syncClockUi();
-    this.world.requestPointerLock();
     this.syncPanelPresentation();
+    this.world.requestPointerLock();
+  }
+
+  /**
+   * 重置帧基准。只影响「下一帧的 rawDelta」，不改时钟、不结算、不清余量，
+   * 因此暂停停留多久都不会在恢复时被补算进模拟时间。
+   */
+  private resetFrameBaseline(): void {
+    this.lastFrameMs = 0;
   }
 
   /**
@@ -687,7 +692,8 @@ export class Game {
   private syncPanelPresentation(): void {
     const open = this.panels.isOpen;
     this.hud.setPanelOpen(open);
-    this.hud.setControlsLocked(open);
+    // ESC 菜单是全屏表现：HUD 整体让位，右侧只留城市画面
+    this.hud.setMenuMode(this.panels.activePanel === 'pause');
     this.hud.setHint(
       open || !this.collisionReady ? null : this.world.getNearbyBuilding(),
     );

@@ -53,6 +53,10 @@ export type PanelId =
 
 export interface PanelHandlers {
   onClose(): void;
+  /** TAB 时间工具区：暂停/继续手动暂停，只走既有命令。 */
+  onTogglePause(): void;
+  /** TAB 时间工具区：速度档位，沿用 TIME.speedOptions 与既有命令语义。 */
+  onSetSpeed(speed: number): void;
   onHire(jobId?: string): void;
   onWorkShift(minutes?: number): void;
   onRest(minutes: number): void;
@@ -557,6 +561,8 @@ export class PanelManager {
   private paintedScroll = 0;
   private readonly root: HTMLElement;
   private readonly win: GameWindow;
+  /** TAB 标题栏的时间工具区：与窗口内容分离，不随栏目刷新重建。 */
+  private timeToolsEl: HTMLElement | null = null;
 
   private readonly personal: PersonalPanel;
   private readonly government: GovernmentPanel;
@@ -656,6 +662,7 @@ export class PanelManager {
     this.lastView = view;
     this.deferredView = null;
     this.paintedScroll = 0;
+    this.timeToolsEl = null;
     const allowed = this.allowedKeys();
     const landing = ENTRY_SECTION[id];
     this.active = allowed.has(landing) ? landing : (allowed.values().next().value ?? null);
@@ -672,17 +679,22 @@ export class PanelManager {
       subtitle: meta.sub,
       place: meta.place,
     });
+    // ESC 菜单走独立的全屏表现模式；其他入口保持普通浮动窗口
+    this.win.setPresentation(id === 'pause' ? 'pause' : 'window');
     this.applySection(true);
+    this.syncTimeTools(view.paused, view.speed);
   }
 
   close(): void {
     if (!this.win.isMounted) {
       this.active = null;
       this.entry = null;
+      this.timeToolsEl = null;
       return;
     }
     this.active = null;
     this.deferredView = null;
+    this.timeToolsEl = null;
     this.personal.teardown();
     destroyStockCharts(this.win.content);
     this.win.unmount();
@@ -701,6 +713,8 @@ export class PanelManager {
     const spec = this.specOf(this.active);
     if (!spec) return;
     if (spec.owner === 'personal') {
+      // 时间工具区不参与内容重建，但必须跟随暂停/速度变化（personal 分支会提前返回）
+      this.syncTimeTools(view.paused, view.speed);
       this.personal.update();
       return;
     }
@@ -712,6 +726,67 @@ export class PanelManager {
       return;
     }
     this.paintBody(view);
+  }
+
+  /* ---------------------------------------------------------- 时间工具区 */
+
+  /**
+   * 构建 TAB 标题栏的时间工具组。
+   * 暂停/继续与速度档位复用既有命令；休息/睡觉复用 TIME 配置与既有业务语义。
+   */
+  private ensureTimeTools(): HTMLElement {
+    if (this.timeToolsEl) return this.timeToolsEl;
+    const el = document.createElement('div');
+    el.className = 'gw-time-tools';
+    el.innerHTML = `
+      <button type="button" class="gw-tool" data-time-action="toggle">暂停</button>
+      <span class="gw-tool-divider"></span>
+      ${TIME.speedOptions
+        .map(
+          (speed) =>
+            `<button type="button" class="gw-tool" data-time-action="speed" data-speed="${speed}">${speed}×</button>`,
+        )
+        .join('')}
+      <span class="gw-tool-divider"></span>
+      <button type="button" class="gw-tool" data-time-action="rest">休息 1 小时</button>
+      <button type="button" class="gw-tool" data-time-action="sleep">睡到早上</button>
+    `;
+    this.timeToolsEl = el;
+    return el;
+  }
+
+  /** 只同步按钮文本与高亮，不重建节点、不影响输入焦点与滚动。 */
+  syncTimeTools(paused: boolean, speed: number): void {
+    const el = this.timeToolsEl;
+    if (!el) return;
+    const toggle = el.querySelector<HTMLElement>('[data-time-action="toggle"]');
+    if (toggle) {
+      const text = paused ? '继续' : '暂停';
+      if (toggle.textContent !== text) toggle.textContent = text;
+      toggle.classList.toggle('is-active', paused);
+    }
+    for (const button of el.querySelectorAll<HTMLElement>('[data-time-action="speed"]')) {
+      const value = Number(button.dataset.speed);
+      button.classList.toggle('is-active', !paused && value === speed);
+    }
+  }
+
+  private dispatchTimeAction(target: HTMLElement): void {
+    const action = target.dataset.timeAction;
+    if (action === 'toggle') {
+      this.handlers.onTogglePause();
+      return;
+    }
+    if (action === 'speed') {
+      const speed = Number(target.dataset.speed);
+      if (TIME.speedOptions.includes(speed)) this.handlers.onSetSpeed(speed);
+      return;
+    }
+    if (action === 'rest') {
+      this.handlers.onRest(TIME.restPresets[0]?.minutes ?? 60);
+      return;
+    }
+    if (action === 'sleep') this.handlers.onSleep();
   }
 
   /* ---------------------------------------------------------- 分类切换 */
@@ -774,6 +849,10 @@ export class PanelManager {
     const meta = ENTRY_META[this.entry ?? 'personal'];
     const chrome = this.chromeFor(spec, meta);
     this.win.setChrome(chrome);
+
+    // 时间工具只属于 TAB 标题栏；其他入口（含 ESC）不出现第二套时间控制
+    if (this.entry === 'personal') this.win.setTools(this.ensureTimeTools());
+    else this.win.setTools(null);
 
     this.mountContent(spec, this.lastView);
     if (resetScroll) this.win.scrollContentTo(0);
@@ -985,6 +1064,11 @@ export class PanelManager {
   /* ------------------------------------------------------------ 动作派发 */
 
   private handleClick = (event: MouseEvent): void => {
+    const timeTarget = (event.target as HTMLElement).closest<HTMLElement>('[data-time-action]');
+    if (timeTarget) {
+      this.dispatchTimeAction(timeTarget);
+      return;
+    }
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-action]');
     if (!target) return;
     const action = target.dataset.action;
@@ -1696,7 +1780,7 @@ export class PanelManager {
         <div class="block-title">界面说明</div>
         <div class="note">管理窗口以浮动面板覆盖在城市场景之上，一次只打开一个；股票详情是辅助浮窗，最多同时打开两个。</div>
         <div class="note">拖动标题栏可移动窗口，双击标题栏或右上角按钮可放大与恢复；位置与放大状态只在内存中，不写入存档。</div>
-        <div class="note">打开管理窗口时模拟继续；只有按 Esc 或 HUD「菜单」打开的系统菜单会暂停时间。</div>
+        <div class="note">打开管理窗口时模拟继续；只有 Esc 菜单（或触屏「界面」里的暂停菜单）会暂停时间。暂停/继续与速度档位在 Tab 窗口标题栏。</div>
         <div class="note">图标来自 Lucide（ISC 许可证），中文字体使用系统字体栈，资源来源见 public/assets/SOURCES.md。</div>
       </div>
       <div class="block">

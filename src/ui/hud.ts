@@ -1,6 +1,9 @@
 /**
- * HUD —— 时间、资金摘要、速度控制、交互提示与鼠标锁定遮罩。
+ * HUD —— 时间、资金摘要、生存状态、交互提示、保存入口与鼠标锁定遮罩。
  * 只渲染视图模型与场景给出的只读信息，所有写操作都通过回调转为命令。
+ *
+ * 暂停/速度/休息/睡觉已经迁到 TAB 标题栏的时间工具区（见 ui/panels.ts），
+ * 这里不再持有任何时间控制，避免出现两套入口与两套状态。
  */
 
 import type { GameDate } from '../core/calendar';
@@ -10,10 +13,6 @@ import type { SurvivalStatusView } from '../app/supplies-view';
 import { icon } from './icons';
 
 export interface HudHandlers {
-  onSetSpeed(speed: number): void;
-  onTogglePause(): void;
-  onRest(minutes: number): void;
-  onSleep(): void;
   onOpenFinance(): void;
   onOpenPause(): void;
   onSave(): void;
@@ -21,6 +20,7 @@ export interface HudHandlers {
 }
 
 export class Hud {
+  private readonly root: HTMLElement;
   private readonly dateEl: HTMLElement;
   private readonly clockEl: HTMLElement;
   private readonly chipEl: HTMLElement;
@@ -34,7 +34,6 @@ export class Hud {
   private readonly hintTextEl: HTMLElement;
   private readonly hintSubEl: HTMLElement;
   private readonly saveStateEl: HTMLElement;
-  private readonly controlsEl: HTMLElement;
   private readonly moneyCardEl: HTMLElement;
   private readonly hungerTextEl: HTMLElement;
   private readonly hungerFillEl: HTMLElement;
@@ -42,14 +41,15 @@ export class Hud {
   private readonly waterFillEl: HTMLElement;
   private readonly survivalEffectEl: HTMLElement;
   private readonly movementEl: HTMLElement;
-  private readonly pauseBtn: HTMLButtonElement;
+  private readonly touchToggleEl: HTMLButtonElement;
+  private readonly touchMenuEl: HTMLElement;
   private readonly lockOverlay: HTMLElement;
   private readonly lockTitle: HTMLElement;
-  private readonly speedButtons = new Map<number, HTMLButtonElement>();
   private hintId: string | null = null;
   private sprintingState: boolean | null = null;
 
   constructor(root: HTMLElement, handlers: HudHandlers) {
+    this.root = root;
     root.innerHTML = `
       <div class="hud-time card">
         <div class="date-line" data-el="date"></div>
@@ -103,22 +103,19 @@ export class Hud {
         <span class="hint-sub" data-el="hint-sub"></span>
       </div>
 
-      <div class="hud-controls card">
-        <button type="button" class="btn btn-sm btn-ghost" data-el="pause">暂停</button>
-        <div class="divider"></div>
-        ${TIME.speedOptions
-          .map((speed) => `<button type="button" class="btn btn-sm" data-speed="${speed}">${speed}×</button>`)
-          .join('')}
-        <div class="divider"></div>
-        <button type="button" class="btn btn-sm btn-ghost" data-el="rest">${icon('clock', { size: 14 })}休息 1 小时</button>
-        <button type="button" class="btn btn-sm btn-ghost" data-el="sleep">${icon('house', { size: 14 })}睡到早上</button>
+      <div class="hud-touch" data-el="touch">
+        <button type="button" class="hud-touch-btn" data-el="touch-toggle" aria-expanded="false">
+          ${icon('settings', { size: 16 })}界面
+        </button>
+        <div class="hud-touch-menu" data-el="touch-menu" hidden>
+          <button type="button" class="btn" data-el="touch-personal">个人界面</button>
+          <button type="button" class="btn" data-el="touch-pause">暂停菜单</button>
+        </div>
       </div>
 
       <div class="hud-actions card">
         <span class="save-state" data-el="save-state"></span>
         <button type="button" class="btn btn-sm btn-ghost" data-el="save">${icon('save', { size: 14 })}保存</button>
-        <button type="button" class="btn btn-sm" data-el="finance">${icon('user', { size: 14 })}个人</button>
-        <button type="button" class="btn btn-sm btn-ghost" data-el="menu">${icon('settings', { size: 14 })}菜单</button>
       </div>
 
       <div class="hint-text">WASD 移动 · Shift 疾跑 · 鼠标转视角 · 滚轮缩放 · F 交互 · Tab 个人界面 · Esc 暂停</div>
@@ -151,7 +148,6 @@ export class Hud {
     this.hintTextEl = pick('hint-text');
     this.hintSubEl = pick('hint-sub');
     this.saveStateEl = pick('save-state');
-    this.controlsEl = root.querySelector<HTMLElement>('.hud-controls') as HTMLElement;
     this.moneyCardEl = pick('money-card');
     this.hungerTextEl = pick('hunger-text');
     this.hungerFillEl = pick('hunger-fill');
@@ -159,28 +155,39 @@ export class Hud {
     this.waterFillEl = pick('water-fill');
     this.survivalEffectEl = pick('survival-effect');
     this.movementEl = pick('movement');
-    this.pauseBtn = pick<HTMLButtonElement>('pause');
+    this.touchToggleEl = pick<HTMLButtonElement>('touch-toggle');
+    this.touchMenuEl = pick('touch-menu');
     this.lockOverlay = pick('lock');
     this.lockTitle = pick('lock-title');
 
-    this.pauseBtn.addEventListener('click', () => handlers.onTogglePause());
-    pick<HTMLButtonElement>('rest').addEventListener('click', () =>
-      handlers.onRest(TIME.restPresets[0]?.minutes ?? 60),
-    );
-    pick<HTMLButtonElement>('sleep').addEventListener('click', () => handlers.onSleep());
-    pick<HTMLButtonElement>('finance').addEventListener('click', () => handlers.onOpenFinance());
-    pick<HTMLButtonElement>('menu').addEventListener('click', () => handlers.onOpenPause());
+    const setTouchMenu = (open: boolean): void => {
+      this.touchMenuEl.hidden = !open;
+      this.touchToggleEl.setAttribute('aria-expanded', String(open));
+    };
+
+    this.touchToggleEl.addEventListener('click', () => {
+      setTouchMenu(this.touchMenuEl.hidden);
+    });
+    pick<HTMLButtonElement>('touch-personal').addEventListener('click', () => {
+      setTouchMenu(false);
+      handlers.onOpenFinance();
+    });
+    pick<HTMLButtonElement>('touch-pause').addEventListener('click', () => {
+      setTouchMenu(false);
+      handlers.onOpenPause();
+    });
+    document.addEventListener('pointerdown', (event) => {
+      if (this.touchMenuEl.hidden) return;
+      const target = event.target as Node | null;
+      if (target && this.touchToggleEl.parentElement?.contains(target)) return;
+      setTouchMenu(false);
+    });
+
     pick<HTMLButtonElement>('save').addEventListener('click', () => handlers.onSave());
     pick<HTMLButtonElement>('lock-button').addEventListener('click', () =>
       handlers.onRequestPointerLock(),
     );
     this.lockOverlay.addEventListener('click', () => handlers.onRequestPointerLock());
-
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-speed]')) {
-      const speed = Number(button.dataset.speed);
-      this.speedButtons.set(speed, button);
-      button.addEventListener('click', () => handlers.onSetSpeed(speed));
-    }
   }
 
   setTime(date: GameDate): void {
@@ -235,22 +242,9 @@ export class Hud {
     this.hintEl.hidden = false;
   }
 
-  syncSpeed(paused: boolean, speed: number): void {
-    this.pauseBtn.textContent = paused ? '继续' : '暂停';
-    this.pauseBtn.classList.toggle('is-active', paused);
-    for (const [value, button] of this.speedButtons) {
-      button.classList.toggle('is-active', !paused && value === speed);
-    }
-  }
-
   setSaveState(text: string, kind: 'idle' | 'ok' | 'error'): void {
     this.saveStateEl.textContent = text;
     this.saveStateEl.className = `save-state${kind === 'idle' ? '' : ` ${kind}`}`;
-  }
-
-  /** 面板打开时锁住时间控制，避免与面板内的休息操作混淆。 */
-  setControlsLocked(locked: boolean): void {
-    this.controlsEl.classList.toggle('locked', locked);
   }
 
   /**
@@ -259,6 +253,18 @@ export class Hud {
    */
   setPanelOpen(open: boolean): void {
     this.moneyCardEl.hidden = open;
+    if (open) {
+      this.touchMenuEl.hidden = true;
+      this.touchToggleEl.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  /**
+   * ESC 菜单期间整体隐去 HUD：菜单是全屏表现，右侧要留给城市画面，
+   * 不能让生存条、保存按钮和触屏入口压在菜单之上。
+   */
+  setMenuMode(active: boolean): void {
+    this.root.classList.toggle('is-menu', active);
   }
 
   /** 移动模式文字（纯表现信息，不读写业务状态）。 */

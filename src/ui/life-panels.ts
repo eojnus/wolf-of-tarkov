@@ -254,7 +254,7 @@ export function renderPause(view: GameViewModel): string {
         </label>
       </div>
       <div class="actions" style="margin-top:8px">
-        <button type="button" class="btn btn-ghost" data-action="new-game">重新开始</button>
+        <button type="button" class="btn btn-danger" data-action="new-game">重新开始</button>
       </div>
     </div>
 
