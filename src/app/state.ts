@@ -75,6 +75,7 @@ import {
 import { createGovernanceState, type GovernanceState } from '../features/governance';
 import { investorAccountId } from '../features/investors';
 import { createLivingState, type LivingState } from '../features/living';
+import { createFurnitureState, type FurnitureState } from '../features/furniture';
 import { createInventoryState, type InventoryState } from '../features/inventory';
 import { createSurvivalState, type SurvivalState } from '../features/survival';
 import { createLoanState, type LoanState } from '../features/loan';
@@ -152,6 +153,8 @@ export interface GameState {
   survival: SurvivalState;
   /** 背包物品数量与购买/使用去重记录。 */
   inventory: InventoryState;
+  /** 晴川公寓固定住宅的 19 件家具布局、方向与收纳状态。 */
+  furniture: FurnitureState;
   /** 所有证券的行情、持仓与成交记录（含旧的独立标的）。 */
   securities: SecuritiesState;
   equity: EquityState;
@@ -206,6 +209,7 @@ export function createInitialState(): GameState {
     living: createLivingState(),
     survival: createSurvivalState(),
     inventory: createInventoryState(),
+    furniture: createFurnitureState(),
     securities: createSecuritiesState(),
     equity: createEquityState(),
     financing: createFinancingState(),

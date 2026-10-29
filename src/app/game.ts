@@ -40,7 +40,7 @@ import { EstateCommands } from './real-estate-commands';
 import { pushEnvironment } from './environment';
 import { entryAllows, entryDeniedMessage, type EntryCapability } from './entry-policy';
 import { buildEstateView } from './real-estate-view';
-import { INTERIOR } from '../content/interior';
+import { FURNITURE_DEFINITION_BY_ID, INTERIOR } from '../content/interior';
 import { freeResidenceOf } from '../features/real-estate';
 import { buildSuppliesView } from './supplies-view';
 import { moveMultiplierOf } from '../features/survival';
@@ -49,11 +49,15 @@ import { advanceGameTime, type AdvanceResult } from './timeAdvance';
 import { buildPersonalView } from './personal-view';
 import { buildCapitalView, buildSecuritiesPanel } from './securities-view';
 import { buildViewModel } from './view';
+import { FurnitureCommands } from './furniture';
+import { FurniturePanel } from '../ui/furniture-panel';
+import type { FurnitureEditCommit } from '../world/interiors/furniture-editor';
 
 export interface GameElements {
   readonly viewport: HTMLElement;
   readonly hudRoot: HTMLElement;
   readonly panelRoot: HTMLElement;
+  readonly furnitureRoot: HTMLElement;
   readonly toastRoot: HTMLElement;
 }
 
@@ -65,11 +69,15 @@ export class Game {
   readonly government: GovernmentCommands;
   readonly supplies: SuppliesCommands;
   readonly estate: EstateCommands;
+  readonly furniture: FurnitureCommands;
   private readonly world: World;
   private readonly hud: Hud;
   private readonly panels: PanelManager;
+  private readonly furniturePanel: FurniturePanel;
   private readonly toast: ToastHost;
   private readonly unsubscribe: () => void;
+  /** 家具编辑会话代次；旧拖动/旧命令回调不得提交到新会话。 */
+  private furnitureSession = 0;
 
   private hiddenPaused = false;
   /** 触屏/粗指针：没有鼠标锁定语义，锁定遮罩与指针锁请求都不参与表现。 */
@@ -135,6 +143,12 @@ export class Game {
 
     this.estate = new EstateCommands(this.store, {
       notify: (kind, message) => this.toast.show(kind, message),
+      requestAutoSave: () => this.enqueueAutoSave(),
+    });
+
+    this.furniture = new FurnitureCommands(this.store, {
+      canEdit: () => this.world.isFurnitureEditing(),
+      session: () => this.furnitureSession,
       requestAutoSave: () => this.enqueueAutoSave(),
     });
 
@@ -313,6 +327,24 @@ export class Game {
     (onsite) => buildEstateView(this.store.state, onsite),
     );
 
+    this.furniturePanel = new FurniturePanel(elements.furnitureRoot, {
+      onExit: () => {
+        this.exitFurnitureEdit();
+      },
+      onWarehouseDragStart: (id, pointerId, clientX, clientY) => {
+        this.world.startWarehouseDrag?.(id, pointerId, clientX, clientY);
+      },
+      onWarehouseDragMove: (pointerId, clientX, clientY) => {
+        this.world.updateWarehouseDrag?.(pointerId, clientX, clientY);
+      },
+      onWarehouseDragEnd: (pointerId, clientX, clientY) => {
+        this.world.endWarehouseDrag?.(pointerId, clientX, clientY);
+      },
+      onWarehouseDragCancel: () => this.world.cancelFurnitureDrag(),
+      onCandidateSelect: (id) => this.world.selectFurniture(id),
+      onResize: () => this.syncFurniturePanelRect(),
+    });
+
     this.unsubscribe = this.store.subscribe((state) => {
       const view = buildViewModel(state);
       this.hud.setMoney(view);
@@ -357,10 +389,12 @@ export class Game {
 
   dispose(): void {
     this.invalidateResidenceRequest();
+    this.cancelFurnitureUi();
     this.stop();
     this.unsubscribe();
     window.removeEventListener('keydown', this.keyHandler);
     document.removeEventListener('visibilitychange', this.visibilityHandler);
+    this.furniturePanel.dispose();
     this.world.dispose();
   }
 
@@ -376,6 +410,7 @@ export class Game {
     const canMove =
       !paused &&
       !this.panels.isOpen &&
+      !this.world.isFurnitureEditing() &&
       this.world.isPointerLocked() &&
       this.collisionReady &&
       !this.interiorLoading;
@@ -389,6 +424,7 @@ export class Game {
       moveMultiplierOf(this.store.state.survival),
     );
     this.hud.setMovementMode(this.world.isSprinting());
+    this.world.updateFurnitureEdit(moveDeltaMs / 1000, paused);
 
     if (!paused) {
       this.accumulateSimulation(Math.min(rawDelta, TIME.maxSimDeltaMs));
@@ -517,6 +553,8 @@ export class Game {
     this.hiddenPaused = document.hidden;
     if (document.hidden) {
       this.world.clearInput();
+      this.world.cancelFurnitureDrag();
+      this.furniturePanel.cancelDrag();
       // 回来时不补算后台时间：余量与帧基准都重置
       this.simAccumulator = 0;
       this.lastFrameMs = 0;
@@ -542,6 +580,7 @@ export class Game {
 
   private requestPointerLock(): void {
     if (this.coarsePointer || this.panels.isOpen || document.hidden) return;
+    if (this.world.isFurnitureEditing()) return;
     this.world.requestPointerLock();
   }
 
@@ -550,6 +589,8 @@ export class Game {
       this.hud.setLockOverlay(false);
       return;
     }
+    // 家具编辑主动释放鼠标：不是暂停，也不显示遮罩。
+    if (this.world.isFurnitureEditing()) return;
     // 解锁可能是「打开面板」造成的，此时不弹暂停菜单
     if (this.panels.isOpen) return;
     if (!this.started) return;
@@ -562,6 +603,7 @@ export class Game {
       this.started &&
       !this.coarsePointer &&
       !this.panels.isOpen &&
+      !this.world.isFurnitureEditing() &&
       !this.world.isPointerLocked();
     this.hud.setLockOverlay(shouldShow);
   }
@@ -578,14 +620,27 @@ export class Game {
   private handleKey(event: KeyboardEvent): void {
     if (this.isTypingTarget(event.target)) return;
 
+    if (event.code === 'KeyE') {
+      if (event.repeat) return;
+      event.preventDefault();
+      if (this.world.isFurnitureEditing()) {
+        this.exitFurnitureEdit();
+      } else if (!this.panels.isOpen) {
+        this.enterFurnitureEdit();
+      }
+      return;
+    }
+
     if (event.code === 'Tab') {
       event.preventDefault();
+      if (this.world.isFurnitureEditing() && !this.exitFurnitureEdit(false)) return;
       this.togglePanel('personal');
       return;
     }
 
     if (event.code === 'KeyF') {
       event.preventDefault();
+      if (this.world.isFurnitureEditing() && !this.exitFurnitureEdit()) return;
       if (this.panels.isOpen) {
         this.closePanel();
         return;
@@ -618,6 +673,10 @@ export class Game {
     }
 
     if (event.code === 'Escape') {
+      if (this.world.isFurnitureEditing()) {
+        this.exitFurnitureEdit();
+        return;
+      }
       if (this.panels.isOpen) {
         // 刚由解锁事件自动打开的暂停菜单，忽略这次 Esc，避免开了又关
         if (performance.now() - this.pauseOpenedAt < 350) return;
@@ -664,6 +723,7 @@ export class Game {
   }
 
   private openPanel(id: PanelId): void {
+    if (this.world.isFurnitureEditing() && !this.exitFurnitureEdit(false)) return;
     // 商店购买上下文只属于便利店面板；打开其它面板即失效
     if (id !== 'shop') this.activeShopId = null;
     // 菜单暂停只由「当前面板是 pause」表达，不再改写 clock.paused。
@@ -714,11 +774,12 @@ export class Game {
    */
   private syncPanelPresentation(): void {
     const open = this.panels.isOpen;
-    this.hud.setPanelOpen(open);
+    const editing = this.world.isFurnitureEditing();
+    this.hud.setPanelOpen(open || editing);
     // ESC 菜单是全屏表现：HUD 整体让位，右侧只留城市画面
     this.hud.setMenuMode(this.panels.activePanel === 'pause');
     this.hud.setHint(
-      open || !this.collisionReady ? null : this.currentHint(),
+      open || editing || !this.collisionReady ? null : this.currentHint(),
     );
     this.updateLockOverlay();
   }
@@ -729,6 +790,7 @@ export class Game {
   private currentHint():
     | { readonly id: string; readonly name: string; readonly subtitle: string; readonly verb?: string }
     | null {
+    if (this.world.isFurnitureEditing()) return null;
     if (this.world.isIndoor()) {
       if (!this.world.canExitInterior()) return null;
       return { id: 'interior-exit', name: '住宅', verb: '离开', subtitle: '回到晴川公寓楼外' };
@@ -781,15 +843,18 @@ export class Game {
     this.world.clearInput();
     this.closePanel();
     try {
-      const result = await this.world.enterInterior(() => {
-        const still = freeResidenceOf(this.store.state.realEstate);
-        return (
-          still !== null &&
-          still.kind === 'home' &&
-          still.id === INTERIOR.residenceId &&
-          still.buildingId === INTERIOR.buildingId
-        );
-      });
+      const result = await this.world.enterInterior(
+        () => {
+          const still = freeResidenceOf(this.store.state.realEstate);
+          return (
+            still !== null &&
+            still.kind === 'home' &&
+            still.id === INTERIOR.residenceId &&
+            still.buildingId === INTERIOR.buildingId
+          );
+        },
+        this.store.state.furniture,
+      );
       // 读档/新游戏/dispose 已让本次请求过期：不弹提示、不同步、不抢鼠标。
       if (request !== this.residenceRequest) return;
       if (!result.ok) {
@@ -817,6 +882,90 @@ export class Game {
     this.syncPanelPresentation();
     this.toast.show('info', '已回到晴川公寓楼外');
     this.requestPointerLock();
+  }
+
+  /* ------------------------------------------------------------ 家具编辑 */
+
+  private enterFurnitureEdit(): void {
+    if (this.world.isFurnitureEditing()) return;
+    if (!this.world.isIndoor()) {
+      this.toast.show('info', '只能在个人住宅内编辑家具');
+      return;
+    }
+    if (
+      this.panels.isOpen ||
+      this.interiorLoading ||
+      this.world.isInteriorTransitioning() ||
+      !this.collisionReady
+    ) {
+      this.toast.show('info', '住宅尚未准备好，请稍候');
+      return;
+    }
+    const session = this.furnitureSession + 1;
+    this.furnitureSession = session;
+    const handlers: FurnitureEditCommit = {
+      move: (id, cellX, cellZ) => this.furniture.move(session, id, cellX, cellZ),
+      rotate: (id, direction) => this.furniture.rotate(session, id, direction),
+      store: (id) => this.furniture.store(session, id),
+      place: (id, cellX, cellZ) => this.furniture.place(session, id, cellX, cellZ),
+    };
+    const result = this.world.enterFurnitureEdit(handlers, {
+      onSelectionChange: (id) => {
+        const layout = this.world.getFurnitureLayout();
+        const item = id && layout ? layout.items[id] : undefined;
+        const definition = item
+          ? FURNITURE_DEFINITION_BY_ID[item.definitionId]
+          : undefined;
+        this.furniturePanel.setSelection(definition?.name ?? null);
+      },
+      onCandidatesChange: (candidates) => this.furniturePanel.setCandidates(candidates),
+      onLayoutChange: (layout) => this.furniturePanel.update(layout),
+      notify: (message) => this.toast.show('error', message),
+    });
+    if (!result.ok) {
+      this.toast.show('info', result.message ?? '无法进入家具编辑');
+      return;
+    }
+    const layout = this.world.getFurnitureLayout();
+    if (layout) this.furniturePanel.show(layout);
+    this.syncFurniturePanelRect();
+    this.syncPanelPresentation();
+  }
+
+  private exitFurnitureEdit(relock = true): boolean {
+    if (!this.world.isFurnitureEditing()) {
+      this.furniturePanel.hide();
+      return true;
+    }
+    const result = this.world.exitFurnitureEdit();
+    if (!result.ok) {
+      if (result.message) this.toast.show('info', result.message);
+      return false;
+    }
+    this.furnitureSession += 1;
+    this.furniturePanel.hide();
+    this.world.setFurniturePanelRect(null);
+    this.syncPanelPresentation();
+    if (relock) this.requestPointerLock();
+    return true;
+  }
+
+  private cancelFurnitureUi(): void {
+    this.furnitureSession += 1;
+    this.world.cancelFurnitureEdit();
+    this.furniturePanel.hide();
+    this.world.setFurniturePanelRect(null);
+  }
+
+  private syncFurniturePanelRect(): void {
+    if (!this.world.isFurnitureEditing()) return;
+    const rect = this.furniturePanel.getRect();
+    this.world.setFurniturePanelRect({
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+    });
   }
 
   /* -------------------------------------------------------- 入口能力检查 */
@@ -1195,6 +1344,7 @@ export class Game {
   private applySnapshot(snapshot: SaveSnapshot): void {
     const { world: worldData, ...gameState } = snapshot.state;
     // 替换 store 前失效并清理旧室内会话；迟到加载结果不得把新存档拉回房间。
+    this.cancelFurnitureUi();
     this.invalidateResidenceRequest();
     this.world.cancelInterior();
     this.store.replace(gameState as GameState);
@@ -1249,6 +1399,7 @@ export class Game {
 
   startNewGame(): void {
     if (!window.confirm('重新开始会清空当前进度（本地存档仍保留），确定吗？')) return;
+    this.cancelFurnitureUi();
     this.invalidateResidenceRequest();
     this.world.cancelInterior();
     this.store.replace(createInitialState());

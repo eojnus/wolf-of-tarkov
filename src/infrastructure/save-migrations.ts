@@ -1,5 +1,5 @@
 /**
- * 存档迁移 —— v1 → v19 的完整版本链与受控旧数据修复。
+ * 存档迁移 —— v1 → v20 的完整版本链与受控旧数据修复。
  *
  * 这里保留历史上所有迁移步骤，顺序与数据保留行为不得改变；
  * 旧的修复规则（无偿配股回收、失效报价与预留清理、缺失股权簿补建）也集中在此。
@@ -31,6 +31,7 @@ import {
 } from '../features/government';
 import { createBaseLayout } from '../features/city-layout';
 import { createEnvironmentState } from '../features/environment';
+import { createFurnitureState } from '../features/furniture';
 import { createHousingState } from '../features/housing';
 import { createRealEstateState } from '../features/real-estate';
 import { createCityDevelopmentState } from '../features/city-development';
@@ -1195,6 +1196,19 @@ export function upgradeV18toV19(state: Record<string, unknown>): Record<string, 
   return next;
 }
 
+/**
+ * v19 → v20：只补晴川公寓固定家具切片。
+ *
+ * 旧版没有家具布局；使用冻结的 19 件种子作为唯一来源。经济、房地产、时间、
+ * 天气与人物室外快照全部原样保留。不读取运行时、不重新量化。
+ */
+export function upgradeV19toV20(state: Record<string, unknown>): Record<string, unknown> {
+  const next = structuredClone(state);
+  const draft = next as unknown as GameState;
+  draft.furniture = createFurnitureState();
+  return next;
+}
+
 export function migrateIfNeeded(
   root: Record<string, unknown>,
   version: number,
@@ -1279,6 +1293,10 @@ export function migrateIfNeeded(
   if (cursor === 18) {
     state = upgradeV18toV19(state);
     cursor = 19;
+  }
+  if (cursor === 19) {
+    state = upgradeV19toV20(state);
+    cursor = 20;
   }
   if (cursor !== SAVE.formatVersion) {
     fail(`不支持的存档版本 ${version}`);

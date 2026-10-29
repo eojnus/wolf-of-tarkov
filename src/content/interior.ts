@@ -5,6 +5,57 @@
  * 房间坐标：X 向右（0–3.3m），Z 向南（0–6.2m，北入口、南窗），Y 向上。
  */
 
+export type QuarterTurn = 0 | 1 | 2 | 3;
+
+/** 家具网格：0.05 m，名称范围 66 × 124；可放整格范围对应墙面 [0.05, 3.25] / [0.05, 6.15]。 */
+export const FURNITURE_CELL_SIZE = 0.05;
+export const FURNITURE_RESIDENCE_ID = 'home-001';
+export const FURNITURE_LAYOUT_VERSION = 1;
+export const FURNITURE_GRID = {
+  cellsX: 66,
+  cellsZ: 124,
+  minCellX: 1,
+  maxCellX: 65,
+  minCellZ: 1,
+  maxCellZ: 123,
+} as const;
+
+/** 家具局部人物碰撞盒（米，相对实体可见 AABB 中心；未旋转）。 */
+export interface FurnitureLocalBox {
+  readonly width: number;
+  readonly depth: number;
+  readonly offsetX: number;
+  readonly offsetZ: number;
+  readonly minY: number;
+  readonly maxY: number;
+}
+
+/**
+ * 19 件固定家具定义。footprintWidth/Depth 是未旋转局部整数格；
+ * 资产、安装高度、局部碰撞与初始种子只在这里定义。
+ */
+export interface FurnitureDefinition {
+  readonly id: string;
+  readonly name: string;
+  readonly footprintWidth: number;
+  readonly footprintDepth: number;
+  readonly seed: {
+    readonly cellX: number;
+    readonly cellZ: number;
+    readonly quarterTurn: QuarterTurn;
+  };
+  /** 可见高度（表现层测量值，米）。 */
+  readonly visualHeight: number;
+  /** 拖动射线使用的水平参考面高度（米）。 */
+  readonly dragHeight: number;
+  /** 四件外部模型的项目资产标识；程序化家具为空。 */
+  readonly assetId?: string;
+  /** 镜子等需要固定可见偏移的物件；不改变逻辑格。 */
+  readonly visualOffsetZ?: number;
+  /** 人物碰撞（也是相机遮挡）；地面装饰/高处悬挂物为空。 */
+  readonly playerCollision: readonly FurnitureLocalBox[];
+}
+
 export interface InteriorFurnitureSpec {
   readonly assetId: string;
   readonly name: string;
@@ -130,3 +181,226 @@ export const INTERIOR = {
     },
   },
 } as const;
+
+const box = (
+  width: number,
+  depth: number,
+  maxY: number,
+  offsetX = 0,
+  offsetZ = 0,
+): FurnitureLocalBox => ({ width, depth, offsetX, offsetZ, minY: 0, maxY });
+
+/**
+ * 固定 19 件实体。顺序即界面/校验顺序；seed 只在初始化与 v19→v20 迁移使用，
+ * 进入住宅或读档不会重新量化。
+ */
+export const FURNITURE_DEFINITIONS: readonly FurnitureDefinition[] = [
+  {
+    id: 'bed',
+    name: '单人床',
+    footprintWidth: 19,
+    footprintDepth: 42,
+    seed: { cellX: 1, cellZ: 62, quarterTurn: 0 },
+    visualHeight: 1.2015,
+    dragHeight: 0.55,
+    assetId: 'polyhaven.old-bed-frame',
+    // 床架+床垫，不含被子/床尾毯的外挑。
+    playerCollision: [box(0.9047, 2.0018, 1.2, 0.0012, -0.02835)],
+  },
+  {
+    id: 'sofa',
+    name: '紧凑沙发',
+    footprintWidth: 32,
+    footprintDepth: 14,
+    seed: { cellX: 32, cellZ: 109, quarterTurn: 2 },
+    visualHeight: 0.7959,
+    dragHeight: 0.4,
+    assetId: 'polyhaven.sofa-01',
+    playerCollision: [box(1.5715, 0.658, 0.8)],
+  },
+  {
+    id: 'desk',
+    name: '书桌',
+    footprintWidth: 23,
+    footprintDepth: 15,
+    seed: { cellX: 50, cellZ: 56, quarterTurn: 1 },
+    visualHeight: 0.7994,
+    dragHeight: 0.4,
+    assetId: 'polyhaven.wooden-table-02',
+    // 局部未旋转：长边沿 X，短边沿 Z；q=1 时由旋转规则交换。
+    playerCollision: [box(1.1344, 0.706, 0.8)],
+  },
+  {
+    id: 'chair',
+    name: '椅子',
+    footprintWidth: 9,
+    footprintDepth: 12,
+    seed: { cellX: 37, cellZ: 63, quarterTurn: 1 },
+    visualHeight: 0.9747,
+    dragHeight: 0.45,
+    assetId: 'polyhaven.dining-chair-02',
+    // 局部未旋转：宽 0.4336、深 0.5764；q=1 时由旋转规则交换。
+    playerCollision: [box(0.4336, 0.5764, 0.98)],
+  },
+  {
+    id: 'shoe-cabinet',
+    name: '鞋柜',
+    footprintWidth: 9,
+    footprintDepth: 15,
+    seed: { cellX: 1, cellZ: 2, quarterTurn: 0 },
+    visualHeight: 0.9,
+    dragHeight: 0.45,
+    playerCollision: [box(0.42, 0.7, 0.9)],
+  },
+  {
+    id: 'entry-mat',
+    name: '玄关地垫',
+    footprintWidth: 16,
+    footprintDepth: 10,
+    seed: { cellX: 25, cellZ: 3, quarterTurn: 0 },
+    visualHeight: 0.002,
+    dragHeight: 0.02,
+    playerCollision: [],
+  },
+  {
+    id: 'shower',
+    name: '淋浴组件',
+    footprintWidth: 12,
+    footprintDepth: 12,
+    seed: { cellX: 17, cellZ: 19, quarterTurn: 0 },
+    visualHeight: 1.875,
+    dragHeight: 0.55,
+    // 底盘可走入，只有玻璃薄条阻挡。
+    playerCollision: [box(0.04, 0.56, 1.9, -0.29, 0)],
+  },
+  {
+    id: 'toilet',
+    name: '马桶',
+    footprintWidth: 12,
+    footprintDepth: 12,
+    seed: { cellX: 1, cellZ: 21, quarterTurn: 0 },
+    visualHeight: 0.62,
+    dragHeight: 0.32,
+    playerCollision: [box(0.5, 0.57, 0.8, -0.035, -0.005)],
+  },
+  {
+    id: 'washbasin',
+    name: '洗手台',
+    footprintWidth: 16,
+    footprintDepth: 11,
+    seed: { cellX: 3, cellZ: 37, quarterTurn: 0 },
+    visualHeight: 1.11,
+    dragHeight: 0.55,
+    playerCollision: [box(0.85, 0.55, 0.9, -0.025, 0.005)],
+  },
+  {
+    id: 'mirror',
+    name: '镜子',
+    footprintWidth: 14,
+    footprintDepth: 1,
+    seed: { cellX: 4, cellZ: 47, quarterTurn: 0 },
+    visualHeight: 1.89,
+    dragHeight: 1.4,
+    visualOffsetZ: -0.03,
+    playerCollision: [],
+  },
+  {
+    id: 'fridge',
+    name: '冰箱',
+    footprintWidth: 11,
+    footprintDepth: 12,
+    seed: { cellX: 53, cellZ: 19, quarterTurn: 0 },
+    visualHeight: 1.78,
+    dragHeight: 0.9,
+    playerCollision: [box(0.54, 0.56, 1.8, 0.005, 0)],
+  },
+  {
+    id: 'base-cabinet',
+    name: '下柜台面组件',
+    footprintWidth: 12,
+    footprintDepth: 17,
+    seed: { cellX: 53, cellZ: 30, quarterTurn: 0 },
+    visualHeight: 1.14,
+    dragHeight: 0.6,
+    playerCollision: [box(0.56, 0.82, 0.95, 0, 0.01)],
+  },
+  {
+    id: 'wall-cabinet',
+    name: '吊柜',
+    footprintWidth: 6,
+    footprintDepth: 9,
+    seed: { cellX: 59, cellZ: 37, quarterTurn: 0 },
+    visualHeight: 2.26,
+    dragHeight: 1.9,
+    playerCollision: [],
+  },
+  {
+    id: 'range-hood',
+    name: '抽油烟机',
+    footprintWidth: 8,
+    footprintDepth: 9,
+    seed: { cellX: 56, cellZ: 30, quarterTurn: 0 },
+    visualHeight: 1.61,
+    dragHeight: 1.5,
+    playerCollision: [],
+  },
+  {
+    id: 'rug',
+    name: '地毯',
+    footprintWidth: 27,
+    footprintDepth: 38,
+    seed: { cellX: 17, cellZ: 67, quarterTurn: 0 },
+    visualHeight: 0.006,
+    dragHeight: 0.02,
+    playerCollision: [],
+  },
+  {
+    id: 'nightstand',
+    name: '床头小几',
+    footprintWidth: 8,
+    footprintDepth: 8,
+    seed: { cellX: 2, cellZ: 53, quarterTurn: 0 },
+    visualHeight: 0.48,
+    dragHeight: 0.25,
+    playerCollision: [box(0.38, 0.38, 0.5)],
+  },
+  {
+    id: 'table-lamp',
+    name: '台灯',
+    footprintWidth: 7,
+    footprintDepth: 7,
+    seed: { cellX: 2, cellZ: 54, quarterTurn: 0 },
+    visualHeight: 0.71,
+    dragHeight: 0.6,
+    playerCollision: [],
+  },
+  {
+    id: 'plant',
+    name: '盆栽',
+    footprintWidth: 10,
+    footprintDepth: 9,
+    seed: { cellX: 19, cellZ: 113, quarterTurn: 0 },
+    visualHeight: 0.68,
+    dragHeight: 0.35,
+    // 只让花盆挡人，叶片是软装饰。
+    playerCollision: [box(0.26, 0.26, 0.6, 0, 0.005)],
+  },
+  {
+    id: 'ceiling-light',
+    name: '吸顶灯',
+    footprintWidth: 11,
+    footprintDepth: 11,
+    seed: { cellX: 28, cellZ: 60, quarterTurn: 0 },
+    visualHeight: 2.54,
+    dragHeight: 2.3,
+    playerCollision: [],
+  },
+];
+
+export const FURNITURE_DEFINITION_BY_ID: Readonly<
+  Record<string, FurnitureDefinition>
+> = Object.fromEntries(FURNITURE_DEFINITIONS.map((item) => [item.id, item]));
+
+export function instanceIdOf(definition: FurnitureDefinition): string {
+  return `${FURNITURE_RESIDENCE_ID}.${definition.id}-01`;
+}

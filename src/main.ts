@@ -45,6 +45,7 @@ function boot(): void {
       viewport: requireElement('viewport'),
       hudRoot: requireElement('hud-layer'),
       panelRoot: requireElement('panel-layer'),
+      furnitureRoot: requireElement('furniture-layer'),
       toastRoot: requireElement('toast-layer'),
     });
   } catch (error) {

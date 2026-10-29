@@ -4,7 +4,7 @@
  * 具体职责已经分开：
  *  - `save-types`：公共类型；
  *  - `save-database`：IndexedDB 原始读写（不懂玩法）；
- *  - `save-migrations`：v1 → v15 迁移链与受控旧数据修复；
+ *  - `save-migrations`：v1 → v20 迁移链与受控旧数据修复；
  *  - `save-validation`：字段与跨切片一致性校验。
  *
  * 本文件只做编排：读原始数据 → 迁移 → 校验 → 返回快照；写快照 → 先备份上一份。

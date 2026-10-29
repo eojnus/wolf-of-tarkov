@@ -3120,3 +3120,225 @@ select.field {
     transform: none !important;
   }
 }
+
+/* ------------------------------------------------------------ 家具仓库 */
+
+#furniture-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+#furniture-layer > * {
+  pointer-events: auto;
+}
+
+.furniture-panel {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  width: 300px;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--sh-window);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  overflow: hidden;
+}
+
+.furniture-panel[hidden] {
+  display: none;
+}
+
+.furniture-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.furniture-kicker {
+  margin: 0 0 4px;
+  color: var(--ink-3);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.furniture-panel h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.furniture-done,
+.furniture-card {
+  font-family: inherit;
+}
+
+.furniture-done {
+  flex: none;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+
+.furniture-done:hover {
+  border-color: var(--teal-line);
+  color: var(--ink);
+}
+
+.furniture-help {
+  margin: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.furniture-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.furniture-empty {
+  padding: 22px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  text-align: center;
+}
+
+.furniture-empty-title {
+  margin: 0 0 6px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.furniture-empty-hint {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.furniture-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--paper);
+  color: var(--ink);
+  text-align: left;
+  cursor: grab;
+  transition: border-color 140ms ease, background 140ms ease, opacity 140ms ease;
+}
+
+.furniture-card:hover {
+  border-color: var(--teal-line);
+  background: var(--teal-soft);
+}
+
+.furniture-card:active,
+.furniture-card.is-dragging {
+  cursor: grabbing;
+  opacity: 0.6;
+}
+
+.furniture-card-name {
+  font-size: 13px;
+}
+
+.furniture-card-meta {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.furniture-card:focus-visible,
+.furniture-done:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+  .furniture-panel {
+    top: 12px;
+    right: 12px;
+    width: min(240px, calc(100vw - 24px));
+    padding: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .furniture-done,
+  .furniture-card {
+    transition: none;
+  }
+}
+
+.furniture-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.furniture-candidates[hidden] {
+  display: none;
+}
+
+.furniture-candidate {
+  padding: 4px 8px;
+  border: 1px solid var(--teal-line);
+  border-radius: var(--r-pill);
+  background: var(--teal-soft);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.furniture-candidate:hover {
+  color: var(--ink);
+  border-color: var(--teal);
+}
+
+.furniture-selected {
+  margin: 0;
+  color: var(--teal-deep);
+  font-size: 12px;
+}
+
+.furniture-selected[hidden] {
+  display: none;
+}
+
+.furniture-card {
+  touch-action: none;
+}
+
+.furniture-candidate:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}

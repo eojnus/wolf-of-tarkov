@@ -742,9 +742,11 @@ export const SAVE = {
    * v19：环境系统——天气种类、当前天气的起点与下次调度时刻、天气独立随机游标
    *     （`environment` 切片）。太阳方向、天空颜色、雾与环境光都由游戏时间与天气推导，
    *     不重复保存。
+   * v20：晴川公寓固定家具布局——19 件家具的格位、朝向与收纳状态（`furniture` 切片）；
+   *     迁移只补固定种子，不改变经济、房地产、时间或人物室外快照。
    *     纯校验调整（例如宣传强度按小数校验、行情调度校验）不占版本号。
    */
-  formatVersion: 19,
+  formatVersion: 20,
   formatTag: 'city-wealth-sim',
   dbName: 'city-wealth-sim',
   dbVersion: 1,

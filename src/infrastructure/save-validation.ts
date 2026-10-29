@@ -33,6 +33,13 @@ import {
 import { DISTRICT_LAYOUT } from '../content/districts';
 import { HOME_LAYOUTS, HOUSING_GROUPS, REAL_ESTATE_RULES } from '../content/real-estate';
 import { POPULATION_RULES } from '../content/population';
+import {
+  FURNITURE_DEFINITIONS,
+  FURNITURE_LAYOUT_VERSION,
+  FURNITURE_RESIDENCE_ID,
+  instanceIdOf,
+} from '../content/interior';
+import { footprintForRotation, isCellPlacementValid } from '../features/furniture';
 import { MARKET_MAKING_RULES, PRODUCT_STOCK_RULES, PROMOTION_RULES, findInvestor } from '../content/capital';
 import { BusinessError } from '../core/errors';
 import { MINUTES_PER_MONTH } from '../features/talent';
@@ -2526,6 +2533,47 @@ function validateHousing(
  * 太阳方向、天空颜色、雾距离与环境光都在运行时由时间与天气推导，存档里没有副本，
  * 因此也不存在需要核对的第二份数值。
  */
+function validateFurniture(state: Record<string, unknown>): void {
+  const furniture = assertObject(state.furniture, 'state.furniture');
+  if (furniture.residenceId !== FURNITURE_RESIDENCE_ID) {
+    fail('家具布局的住宅标识非法');
+  }
+  if (furniture.layoutVersion !== FURNITURE_LAYOUT_VERSION) {
+    fail('家具布局版本非法');
+  }
+  const items = assertObject(furniture.items, 'state.furniture.items');
+  const expected = new Set(FURNITURE_DEFINITIONS.map((definition) => instanceIdOf(definition)));
+  const actual = Object.keys(items);
+  if (actual.length !== expected.size || actual.some((id) => !expected.has(id))) {
+    fail('家具实例集合不完整或包含未知实例');
+  }
+  for (const definition of FURNITURE_DEFINITIONS) {
+    const id = instanceIdOf(definition);
+    const item = assertObject(items[id], `家具 ${id}`);
+    if (item.id !== id) fail(`家具实例 id 与键不一致：${id}`);
+    if (item.definitionId !== definition.id) fail(`家具 ${id} 的定义不匹配`);
+    const status = assertString(item.status, `家具 ${id} 状态`);
+    if (status !== 'placed' && status !== 'stored') fail(`家具 ${id} 状态非法`);
+    const quarterTurn = assertNonNegativeInt(item.quarterTurn, `家具 ${id} 朝向`);
+    if (quarterTurn > 3) fail(`家具 ${id} 朝向越界`);
+    const width = assertNonNegativeInt(item.footprintWidth, `家具 ${id} 占格宽度`);
+    const depth = assertNonNegativeInt(item.footprintDepth, `家具 ${id} 占格深度`);
+    if (width !== definition.footprintWidth || depth !== definition.footprintDepth) {
+      fail(`家具 ${id} 的占格尺寸与定义不一致`);
+    }
+    const cellX = assertNonNegativeInt(item.cellX, `家具 ${id} X 格`);
+    const cellZ = assertNonNegativeInt(item.cellZ, `家具 ${id} Z 格`);
+    const span = footprintForRotation(
+      definition.footprintWidth,
+      definition.footprintDepth,
+      quarterTurn as 0 | 1 | 2 | 3,
+    );
+    if (!isCellPlacementValid(cellX, cellZ, span)) {
+      fail(`家具 ${id} 的格位超出允许范围`);
+    }
+  }
+}
+
 function validateEnvironment(state: Record<string, unknown>, totalMinute: number): void {
   const environment = assertObject(state.environment, 'state.environment');
   const weather = assertString(environment.weather, '当前天气');
@@ -2609,6 +2657,8 @@ export function validateSaveState(rawState: unknown): Record<string, unknown> {
     const units = assertNonNegativeInt(survival[key], `生存值 ${key}`);
     if (units > SURVIVAL.fullUnits) fail(`生存值 ${key} 越界`);
   }
+
+  validateFurniture(state);
 
   const inventory = assertObject(state.inventory, 'state.inventory');
   const operationEpoch = assertString(inventory.operationEpoch, 'state.inventory.operationEpoch');

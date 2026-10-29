@@ -7,20 +7,67 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { INTERIOR, type InteriorFurnitureSpec } from '../../content/interior';
+import {
+  FURNITURE_DEFINITIONS,
+  INTERIOR,
+  instanceIdOf,
+  type InteriorFurnitureSpec,
+} from '../../content/interior';
+import {
+  cellCenter,
+  footprintOf,
+  playerCollidersOf,
+  type ReadonlyFurnitureState,
+} from '../../features/furniture';
 import type { PlayerBounds, PlayerPose } from '../player';
 import type { Collider } from '../scene';
 
 export interface InteriorRuntime {
   readonly scene: THREE.Scene;
-  /** 人物移动碰撞（2D AABB）。 */
+  /** 人物移动碰撞（2D AABB，已含当前已放置家具）。 */
   readonly colliders: readonly Collider[];
   /** 相机遮挡：移动碰撞 + 天花板/门洞封口等只对相机生效的盒体。 */
   readonly occluders: readonly Collider[];
+  /** 固定壳体碰撞/遮挡；编辑会话的安全落点只把它们当永久障碍。 */
+  readonly shellColliders: readonly Collider[];
+  readonly shellOccluders: readonly Collider[];
+  /** 编辑态隐藏内墙后，射线遮挡应跳过这些固定盒。 */
+  readonly editShellOccluders: readonly Collider[];
   readonly bounds: PlayerBounds;
   readonly spawn: PlayerPose;
   readonly exit: { readonly x: number; readonly z: number; readonly radius: number };
+  /** 实体 id → 组；已收纳实体仍在表中，但不一定挂在 Scene 上。 */
+  readonly furnitureRoots: ReadonlyMap<string, THREE.Object3D>;
+  applyFurnitureLayout(layout: ReadonlyFurnitureState): void;
+  setFurnitureEditMode(active: boolean): void;
   dispose(): void;
+}
+
+interface PartCollector {
+  current: string | null;
+  readonly map: Map<string, THREE.Object3D[]>;
+}
+
+let activeCollector: PartCollector | null = null;
+
+function registerObject(object: THREE.Object3D): void {
+  const owner = activeCollector?.current;
+  if (!owner || !activeCollector) return;
+  const list = activeCollector.map.get(owner);
+  if (list) list.push(object);
+  else activeCollector.map.set(owner, [object]);
+}
+
+function withPart<T>(collector: PartCollector, id: string, build: () => T): T {
+  const previous = activeCollector;
+  activeCollector = collector;
+  collector.current = id;
+  try {
+    return build();
+  } finally {
+    collector.current = previous?.current ?? null;
+    activeCollector = previous;
+  }
 }
 
 const COLORS = {
@@ -60,6 +107,7 @@ function box(
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   scene.add(mesh);
+  registerObject(mesh);
   return mesh;
 }
 
@@ -210,6 +258,7 @@ function addRoomShell(scene: THREE.Scene, colliders: Collider[], occluders: Coll
   const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), ceilingMat);
   ceiling.rotation.x = Math.PI / 2;
   ceiling.position.set(width / 2, height, depth / 2);
+  ceiling.userData.editHide = true;
   scene.add(ceiling);
 
   const wallMat = material(COLORS.wall, 0.9);
@@ -228,7 +277,8 @@ function addRoomShell(scene: THREE.Scene, colliders: Collider[], occluders: Coll
     0,
     wallMat,
   );
-  box(scene, entrance.maxX - entrance.minX, height - entrance.height, wall, (entrance.minX + entrance.maxX) / 2, height - (height - entrance.height) / 2, 0, wallMat);
+  const entranceHeader = box(scene, entrance.maxX - entrance.minX, height - entrance.height, wall, (entrance.minX + entrance.maxX) / 2, height - (height - entrance.height) / 2, 0, wallMat);
+  entranceHeader.userData.editHide = true;
   addCollider(colliders, 0, entrance.minX, -wall / 2, wall / 2);
   addCollider(colliders, entrance.maxX, width, -wall / 2, wall / 2);
 
@@ -237,7 +287,8 @@ function addRoomShell(scene: THREE.Scene, colliders: Collider[], occluders: Coll
   box(scene, win.minX, height, wall, win.minX / 2, wallY, depth, wallMat);
   box(scene, width - win.maxX, height, wall, (width + win.maxX) / 2, wallY, depth, wallMat);
   box(scene, win.maxX - win.minX, win.minY, wall, (win.minX + win.maxX) / 2, win.minY / 2, depth, wallMat);
-  box(scene, win.maxX - win.minX, height - win.maxY, wall, (win.minX + win.maxX) / 2, height - (height - win.maxY) / 2, depth, wallMat);
+  const windowHeader = box(scene, win.maxX - win.minX, height - win.maxY, wall, (win.minX + win.maxX) / 2, height - (height - win.maxY) / 2, depth, wallMat);
+  windowHeader.userData.editHide = true;
   // 窗不是门：整面南墙都阻挡移动与相机，窗洞只影响外观
   addCollider(colliders, 0, width, depth - wall / 2, depth + wall / 2);
 
@@ -286,15 +337,6 @@ function addRoomShell(scene: THREE.Scene, colliders: Collider[], occluders: Coll
   backdrop.rotation.y = Math.PI;
   scene.add(backdrop);
 
-  // 天花灯槽与吸顶灯
-  const lightDisc = new THREE.Mesh(
-    new THREE.CircleGeometry(0.26, 28),
-    new THREE.MeshStandardMaterial({ color: 0xfff6e6, emissive: 0xffe6b8, emissiveIntensity: 0.9 }),
-  );
-  lightDisc.rotation.x = Math.PI / 2;
-  lightDisc.position.set(1.66, height - 0.01, 3.25);
-  scene.add(lightDisc);
-
   // 相机专用遮挡：门洞封口与天花板。
   // 人物碰撞不使用它们 —— 门洞必须可通行，而 2D 碰撞不读 Y，天花板会挡住整个房间。
   occluders.push({
@@ -315,25 +357,34 @@ function addRoomShell(scene: THREE.Scene, colliders: Collider[], occluders: Coll
   });
 }
 
-function addEntry(scene: THREE.Scene, colliders: Collider[]): void {
+function addEntry(scene: THREE.Scene, collector: PartCollector): void {
   const { wall } = INTERIOR.room;
   // 鞋柜：西墙北端
-  const cabinetMat = material(COLORS.wood, 0.72);
-  box(scene, 0.42, 0.86, 0.7, wall + 0.21, 0.43, 0.47, cabinetMat);
-  box(scene, 0.44, 0.04, 0.72, wall + 0.21, 0.88, 0.47, material(COLORS.woodDark, 0.6));
-  addCollider(colliders, wall, wall + 0.42, 0.12, 0.82, 0.9);
+  withPart(collector, 'shoe-cabinet', () => {
+    const cabinetMat = material(COLORS.wood, 0.72);
+    box(scene, 0.42, 0.86, 0.7, wall + 0.21, 0.43, 0.47, cabinetMat);
+    box(scene, 0.44, 0.04, 0.72, wall + 0.21, 0.88, 0.47, material(COLORS.woodDark, 0.6));
+  });
 
   // 地垫（玄关落尘区，仅材质变化）
-  const mat = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.8, 0.5),
-    new THREE.MeshStandardMaterial({ color: 0x9a9384, roughness: 1 }),
-  );
-  mat.rotation.x = -Math.PI / 2;
-  mat.position.set(1.66, 0.002, 0.42);
-  scene.add(mat);
+  withPart(collector, 'entry-mat', () => {
+    const mat = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.8, 0.5),
+      new THREE.MeshStandardMaterial({ color: 0x9a9384, roughness: 1 }),
+    );
+    mat.rotation.x = -Math.PI / 2;
+    mat.position.set(1.66, 0.002, 0.42);
+    scene.add(mat);
+    registerObject(mat);
+  });
 }
 
-function addBathroom(scene: THREE.Scene, colliders: Collider[]): void {
+function addBathroom(
+  scene: THREE.Scene,
+  colliders: Collider[],
+  collector: PartCollector,
+  editHiddenOccluders: Collider[],
+): void {
   const { wall } = INTERIOR.room;
   const bathMat = material(COLORS.wall, 0.92);
   const tileMat = material(COLORS.tile, 0.6);
@@ -342,12 +393,23 @@ function addBathroom(scene: THREE.Scene, colliders: Collider[]): void {
   const { bathroomDoor } = INTERIOR.openings;
   box(scene, 1.5, INTERIOR.room.height, wall, 0.75, INTERIOR.room.height / 2, 0.9, bathMat);
   addCollider(colliders, 0, 1.5, 0.9 - wall / 2, 0.9 + wall / 2);
-  box(scene, 1.5, INTERIOR.room.height, wall, 0.75, INTERIOR.room.height / 2, 2.4, bathMat);
-  addCollider(colliders, 0, 1.5, 2.4 - wall / 2, 2.4 + wall / 2);
+  const bathroomSouthWall = box(scene, 1.5, INTERIOR.room.height, wall, 0.75, INTERIOR.room.height / 2, 2.4, bathMat);
+  bathroomSouthWall.userData.editHide = true;
+  const bathroomSouthCollider: Collider = {
+    minX: 0,
+    maxX: 1.5,
+    minZ: 2.4 - wall / 2,
+    maxZ: 2.4 + wall / 2,
+    minY: 0,
+    maxY: INTERIOR.room.height,
+  };
+  colliders.push(bathroomSouthCollider);
+  editHiddenOccluders.push(bathroomSouthCollider);
   // 东墙分段
   box(scene, wall, INTERIOR.room.height, bathroomDoor.minZ - 0.9, 1.5, INTERIOR.room.height / 2, (0.9 + bathroomDoor.minZ) / 2, bathMat);
   box(scene, wall, INTERIOR.room.height, 2.4 - bathroomDoor.maxZ, 1.5, INTERIOR.room.height / 2, (bathroomDoor.maxZ + 2.4) / 2, bathMat);
-  box(scene, wall, INTERIOR.room.height - bathroomDoor.height, bathroomDoor.maxZ - bathroomDoor.minZ, 1.5, INTERIOR.room.height - (INTERIOR.room.height - bathroomDoor.height) / 2, (bathroomDoor.minZ + bathroomDoor.maxZ) / 2, bathMat);
+  const doorHeader = box(scene, wall, INTERIOR.room.height - bathroomDoor.height, bathroomDoor.maxZ - bathroomDoor.minZ, 1.5, INTERIOR.room.height - (INTERIOR.room.height - bathroomDoor.height) / 2, (bathroomDoor.minZ + bathroomDoor.maxZ) / 2, bathMat);
+  doorHeader.userData.editHide = true;
   addCollider(colliders, 1.5 - wall / 2, 1.5 + wall / 2, 0.9, bathroomDoor.minZ);
   addCollider(colliders, 1.5 - wall / 2, 1.5 + wall / 2, bathroomDoor.maxZ, 2.4);
 
@@ -358,38 +420,57 @@ function addBathroom(scene: THREE.Scene, colliders: Collider[]): void {
   scene.add(tileFloor);
 
   // 淋浴区：北侧
-  box(scene, 0.58, 0.06, 0.56, 1.14, 0.03, 1.24, material(COLORS.stone, 0.5));
-  const showerGlass = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.56, 1.85),
-    new THREE.MeshPhysicalMaterial({ color: 0xd9ecef, transparent: true, opacity: 0.2, roughness: 0.05, depthWrite: false }),
-  );
-  showerGlass.rotation.y = Math.PI / 2;
-  showerGlass.position.set(0.85, 0.95, 1.24);
-  scene.add(showerGlass);
-  addCollider(colliders, 0.83, 0.87, 0.96, 1.52, 1.9);
+  withPart(collector, 'shower', () => {
+    box(scene, 0.58, 0.06, 0.56, 1.14, 0.03, 1.24, material(COLORS.stone, 0.5));
+    const showerGlass = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.56, 1.85),
+      new THREE.MeshPhysicalMaterial({ color: 0xd9ecef, transparent: true, opacity: 0.2, roughness: 0.05, depthWrite: false }),
+    );
+    showerGlass.rotation.y = Math.PI / 2;
+    showerGlass.position.set(0.85, 0.95, 1.24);
+    scene.add(showerGlass);
+    registerObject(showerGlass);
+  });
 
   // 马桶：西墙
-  box(scene, 0.4, 0.42, 0.56, 0.32, 0.21, 1.34, material(0xf4f2ec, 0.35));
-  box(scene, 0.16, 0.62, 0.42, 0.14, 0.31, 1.34, material(0xf4f2ec, 0.4));
-  const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.06, 24), material(0xffffff, 0.3));
-  seat.position.set(0.42, 0.45, 1.34);
-  scene.add(seat);
-  addCollider(colliders, 0.06, 0.56, 1.05, 1.62, 0.8);
+  withPart(collector, 'toilet', () => {
+    box(scene, 0.4, 0.42, 0.56, 0.32, 0.21, 1.34, material(0xf4f2ec, 0.35));
+    box(scene, 0.16, 0.62, 0.42, 0.14, 0.31, 1.34, material(0xf4f2ec, 0.4));
+    const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.06, 24), material(0xffffff, 0.3));
+    seat.position.set(0.42, 0.45, 1.34);
+    scene.add(seat);
+    registerObject(seat);
+  });
 
   // 洗手台：南墙（略窄，给门口留出可站立空间）
-  box(scene, 0.76, 0.8, 0.5, 0.55, 0.4, 2.12, material(COLORS.wood, 0.7));
-  box(scene, 0.8, 0.06, 0.54, 0.55, 0.83, 2.12, material(0xf7f6f2, 0.4));
-  const basin = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.17, 0.12, 24), material(0xffffff, 0.25));
-  basin.position.set(0.55, 0.9, 2.12);
-  scene.add(basin);
-  box(scene, 0.04, 0.22, 0.04, 0.55, 1.0, 2.3, material(COLORS.metal, 0.3, 0.7));
-  addCollider(colliders, 0.1, 0.95, 1.85, 2.4, 0.9);
+  withPart(collector, 'washbasin', () => {
+    box(scene, 0.76, 0.8, 0.5, 0.55, 0.4, 2.12, material(COLORS.wood, 0.7));
+    box(scene, 0.8, 0.06, 0.54, 0.55, 0.83, 2.12, material(0xf7f6f2, 0.4));
+    const basin = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.17, 0.12, 24), material(0xffffff, 0.25));
+    basin.position.set(0.55, 0.9, 2.12);
+    scene.add(basin);
+    registerObject(basin);
+    box(scene, 0.04, 0.22, 0.04, 0.55, 1.0, 2.3, material(COLORS.metal, 0.3, 0.7));
+  });
 
-  // 镜面
-  const mirror = new THREE.Mesh(new THREE.PlaneGeometry(0.68, 0.62), material(0xb9c6c9, 0.15, 0.6));
-  mirror.position.set(0.55, 1.58, 2.37);
-  mirror.rotation.y = Math.PI;
-  scene.add(mirror);
+  // 镜面：薄盒拾取代理；可见面稍后由固定子节点偏移移到南墙内表面之前。
+  withPart(collector, 'mirror', () => {
+    const mirrorMaterial = material(0xb9c6c9, 0.15, 0.6);
+    mirrorMaterial.side = THREE.DoubleSide;
+    const mirror = new THREE.Mesh(new THREE.PlaneGeometry(0.68, 0.62), mirrorMaterial);
+    mirror.position.set(0.55, 1.58, 2.37);
+    mirror.rotation.y = Math.PI;
+    scene.add(mirror);
+    registerObject(mirror);
+    const proxy = new THREE.Mesh(
+      new THREE.BoxGeometry(0.68, 0.62, 0.02),
+      new THREE.MeshBasicMaterial({ visible: false }),
+    );
+    proxy.position.copy(mirror.position);
+    proxy.rotation.y = Math.PI;
+    scene.add(proxy);
+    registerObject(proxy);
+  });
 
   // 推拉门：完全推开、贴在北侧墙段上，门洞保持可通行（不做门动画）
   const door = box(
@@ -405,46 +486,57 @@ function addBathroom(scene: THREE.Scene, colliders: Collider[]): void {
   door.name = 'bathroom-sliding-door';
 }
 
-function addKitchen(scene: THREE.Scene, colliders: Collider[]): void {
+function addKitchen(
+  scene: THREE.Scene,
+  collector: PartCollector,
+): void {
   const { width } = INTERIOR.room;
   const counterMat = material(COLORS.counter, 0.8);
   const cabinetMat = material(COLORS.wood, 0.72);
   const darkMat = material(COLORS.dark, 0.45, 0.2);
 
   // 冰箱：功能带北端
-  box(scene, 0.54, 1.78, 0.56, width - 0.35, 0.89, 1.24, material(0xe7e9e8, 0.5, 0.1));
-  box(scene, 0.02, 0.5, 0.04, width - 0.62, 1.2, 1.24, material(COLORS.metal, 0.3, 0.7));
-  addCollider(colliders, width - 0.62, width - 0.08, 0.96, 1.52, 1.8);
+  withPart(collector, 'fridge', () => {
+    box(scene, 0.54, 1.78, 0.56, width - 0.35, 0.89, 1.24, material(0xe7e9e8, 0.5, 0.1));
+    box(scene, 0.02, 0.5, 0.04, width - 0.62, 1.2, 1.24, material(COLORS.metal, 0.3, 0.7));
+  });
 
-  // 下柜与台面
-  box(scene, 0.56, 0.86, 0.8, width - 0.36, 0.43, 1.94, cabinetMat);
-  box(scene, 0.6, 0.05, 0.84, width - 0.36, 0.885, 1.94, counterMat);
-  addCollider(colliders, width - 0.64, width - 0.08, 1.54, 2.36, 0.95);
+  // 下柜与台面：整组，不拆面板
+  withPart(collector, 'base-cabinet', () => {
+    box(scene, 0.56, 0.86, 0.8, width - 0.36, 0.43, 1.94, cabinetMat);
+    box(scene, 0.6, 0.05, 0.84, width - 0.36, 0.885, 1.94, counterMat);
 
-  // 水槽
-  box(scene, 0.4, 0.03, 0.42, width - 0.38, 0.9, 2.08, darkMat);
-  box(scene, 0.04, 0.24, 0.04, width - 0.2, 1.02, 2.18, material(COLORS.metal, 0.25, 0.8));
+    // 水槽
+    box(scene, 0.4, 0.03, 0.42, width - 0.38, 0.9, 2.08, darkMat);
+    box(scene, 0.04, 0.24, 0.04, width - 0.2, 1.02, 2.18, material(COLORS.metal, 0.25, 0.8));
 
-  // 灶台与两个灶眼
-  box(scene, 0.46, 0.02, 0.34, width - 0.38, 0.91, 1.72, darkMat);
-  for (const offset of [-0.11, 0.11]) {
-    const burner = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.09, 0.09, 0.012, 20),
-      material(COLORS.metal, 0.35, 0.7),
-    );
-    burner.position.set(width - 0.38 + offset, 0.925, 1.72);
-    scene.add(burner);
-  }
+    // 灶台与两个灶眼
+    box(scene, 0.46, 0.02, 0.34, width - 0.38, 0.91, 1.72, darkMat);
+    for (const offset of [-0.11, 0.11]) {
+      const burner = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.09, 0.09, 0.012, 20),
+        material(COLORS.metal, 0.35, 0.7),
+      );
+      burner.position.set(width - 0.38 + offset, 0.925, 1.72);
+      scene.add(burner);
+      registerObject(burner);
+    }
+
+    // 台面下柜门缝
+    for (let i = 0; i < 2; i += 1) {
+      box(scene, 0.005, 0.72, 0.36, width - 0.641, 0.44, 1.76 + i * 0.4, material(COLORS.woodDark, 0.8));
+    }
+  });
 
   // 吊柜：水槽上方，浅进深，避免与灶台上方烟机相撞
-  box(scene, 0.26, 0.62, 0.42, width - 0.21, 1.95, 2.05, cabinetMat);
-  // 抽油烟机：灶台正上方，薄烟机
-  box(scene, 0.4, 0.12, 0.44, width - 0.3, 1.55, 1.72, material(COLORS.metal, 0.35, 0.55));
+  withPart(collector, 'wall-cabinet', () => {
+    box(scene, 0.26, 0.62, 0.42, width - 0.21, 1.95, 2.05, cabinetMat);
+  });
 
-  // 台面下柜门缝
-  for (let i = 0; i < 2; i += 1) {
-    box(scene, 0.005, 0.72, 0.36, width - 0.641, 0.44, 1.76 + i * 0.4, material(COLORS.woodDark, 0.8));
-  }
+  // 抽油烟机：灶台正上方，薄烟机
+  withPart(collector, 'range-hood', () => {
+    box(scene, 0.4, 0.12, 0.44, width - 0.3, 1.55, 1.72, material(COLORS.metal, 0.35, 0.55));
+  });
 }
 
 /**
@@ -455,6 +547,7 @@ function addPartition(
   scene: THREE.Scene,
   colliders: Collider[],
   occluders: Collider[],
+  editHiddenOccluders: Collider[],
 ): void {
   const { height, wall, width } = INTERIOR.room;
   const { partition } = INTERIOR.openings;
@@ -488,7 +581,7 @@ function addPartition(
 
   // 厨房南端的短墙：把服务区与起居区分开，门洞以东不再直接敞开
   const stubStart = partition.maxX + postW;
-  box(
+  const stubWall = box(
     scene,
     width - stubStart,
     height,
@@ -498,11 +591,21 @@ function addPartition(
     z,
     wallMat,
   );
-  addCollider(colliders, stubStart, width, z - wall / 2, z + wall / 2);
+  stubWall.userData.editHide = true;
+  const stubCollider: Collider = {
+    minX: stubStart,
+    maxX: width,
+    minZ: z - wall / 2,
+    maxZ: z + wall / 2,
+    minY: 0,
+    maxY: height,
+  };
+  colliders.push(stubCollider);
+  editHiddenOccluders.push(stubCollider);
 
   // 门头：高度不足 2.05m 的部分封住；只做相机遮挡，不阻断人物移动
   const headerW = partition.maxX - partition.minX + postW * 2;
-  box(
+  const partitionHeader = box(
     scene,
     headerW,
     height - partition.height,
@@ -512,6 +615,7 @@ function addPartition(
     z,
     wallMat,
   );
+  partitionHeader.userData.editHide = true;
   occluders.push({
     minX: partition.minX - postW,
     maxX: partition.maxX + postW,
@@ -535,68 +639,78 @@ function addPartition(
     material(COLORS.wood, 0.72),
   );
   leaf.name = 'partition-sliding-door';
+  leaf.userData.editHide = true;
   // 门扇停靠位也占空间：只挡这一个薄片，不额外切断走廊
-  addCollider(
-    colliders,
-    partition.minX - postW - partition.leafWidth,
-    partition.minX - postW,
-    leafZ - 0.0175,
-    leafZ + 0.0175,
-    2.0,
-  );
-  occluders.push({
+  const leafCollider: Collider = {
     minX: partition.minX - postW - partition.leafWidth,
     maxX: partition.minX - postW,
     minZ: leafZ - 0.0175,
     maxZ: leafZ + 0.0175,
     minY: 0,
     maxY: 2.0,
-  });
+  };
+  colliders.push(leafCollider);
+  occluders.push(leafCollider);
+  // 编辑俯视时隐藏门扇，否则会挡住卫浴/玄关一侧的高处家具拾取。
+  editHiddenOccluders.push(leafCollider);
 
   // 顶部滑轨与门把手
-  box(scene, 2.3, 0.05, 0.06, 1.57, 2.06, leafZ, material(COLORS.metal, 0.35, 0.7));
-  box(scene, 0.025, 0.22, 0.03, partition.minX - postW - 0.08, 1.0, leafZ + 0.03, material(COLORS.metal, 0.3, 0.8));
+  const rail = box(scene, 2.3, 0.05, 0.06, 1.57, 2.06, leafZ, material(COLORS.metal, 0.35, 0.7));
+  rail.userData.editHide = true;
+  const handle = box(scene, 0.025, 0.22, 0.03, partition.minX - postW - 0.08, 1.0, leafZ + 0.03, material(COLORS.metal, 0.3, 0.8));
+  handle.userData.editHide = true;
 }
 
-function addLivingDetails(scene: THREE.Scene, colliders: Collider[]): void {
+function addLivingDetails(scene: THREE.Scene, collector: PartCollector): void {
   // 地毯：床与书桌之间
-  const rug = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.35, 1.9),
-    new THREE.MeshStandardMaterial({ color: 0xc9c2b3, roughness: 1 }),
-  );
-  rug.rotation.x = -Math.PI / 2;
-  rug.position.set(1.52, 0.006, 4.3);
-  scene.add(rug);
+  withPart(collector, 'rug', () => {
+    const rug = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.35, 1.9),
+      new THREE.MeshStandardMaterial({ color: 0xc9c2b3, roughness: 1 }),
+    );
+    rug.rotation.x = -Math.PI / 2;
+    rug.position.set(1.52, 0.006, 4.3);
+    scene.add(rug);
+    registerObject(rug);
+  });
 
   // 床头小几：放在床北侧墙角，不占用床与椅之间的通道
-  box(scene, 0.38, 0.48, 0.38, 0.29, 0.24, 2.85, material(COLORS.wood, 0.7));
-  addCollider(colliders, 0.1, 0.48, 2.66, 3.04, 0.5);
-  // 台灯
-  const lamp = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.12, 0.16, 0.18, 20),
-    new THREE.MeshStandardMaterial({ color: 0xfff0d2, emissive: 0xffd79a, emissiveIntensity: 0.55, roughness: 0.8 }),
-  );
-  lamp.position.set(0.29, 0.62, 2.85);
-  scene.add(lamp);
+  withPart(collector, 'nightstand', () => {
+    box(scene, 0.38, 0.48, 0.38, 0.29, 0.24, 2.85, material(COLORS.wood, 0.7));
+  });
 
-  // 南窗绿植：避开沙发与床的落位
-  const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.1, 0.28, 18), material(0xb08d70, 0.9));
-  pot.position.set(1.22, 0.14, 5.88);
-  scene.add(pot);
-  const leafMat = material(COLORS.accent, 0.95);
-  const leafSpecs: readonly [number, number, number, number][] = [
-    [0, 0.44, 0, 0.2],
-    [-0.12, 0.38, 0.06, 0.13],
-    [0.11, 0.4, -0.07, 0.14],
-    [0.03, 0.52, 0.05, 0.11],
-  ];
-  for (const [dx, y, dz, radius] of leafSpecs) {
-    const leaves = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 10), leafMat);
-    leaves.position.set(1.22 + dx, y, 5.88 + dz);
-    leaves.scale.set(1, 0.82, 1);
-    scene.add(leaves);
-  }
-  addCollider(colliders, 1.09, 1.35, 5.75, 6.01, 0.6);
+  // 台灯：独立于小几，不自动跟随
+  withPart(collector, 'table-lamp', () => {
+    const lamp = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.16, 0.18, 20),
+      new THREE.MeshStandardMaterial({ color: 0xfff0d2, emissive: 0xffd79a, emissiveIntensity: 0.55, roughness: 0.8 }),
+    );
+    lamp.position.set(0.29, 0.62, 2.85);
+    scene.add(lamp);
+    registerObject(lamp);
+  });
+
+  // 南窗绿植：花盆与全部叶片同组；避开沙发与床的落位
+  withPart(collector, 'plant', () => {
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.1, 0.28, 18), material(0xb08d70, 0.9));
+    pot.position.set(1.22, 0.14, 5.88);
+    scene.add(pot);
+    registerObject(pot);
+    const leafMat = material(COLORS.accent, 0.95);
+    const leafSpecs: readonly [number, number, number, number][] = [
+      [0, 0.44, 0, 0.2],
+      [-0.12, 0.38, 0.06, 0.13],
+      [0.11, 0.4, -0.07, 0.14],
+      [0.03, 0.52, 0.05, 0.11],
+    ];
+    for (const [dx, y, dz, radius] of leafSpecs) {
+      const leaves = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 10), leafMat);
+      leaves.position.set(1.22 + dx, y, 5.88 + dz);
+      leaves.scale.set(1, 0.82, 1);
+      scene.add(leaves);
+      registerObject(leaves);
+    }
+  });
 }
 
 function addLights(scene: THREE.Scene): void {
@@ -621,19 +735,6 @@ function addLights(scene: THREE.Scene): void {
   const kitchen = new THREE.PointLight(0xfff2dc, 3.5, 3, 2);
   kitchen.position.set(2.95, 2.2, 1.9);
   scene.add(kitchen);
-}
-
-function furnitureCollider(spec: InteriorFurnitureSpec): Collider {
-  const halfW = spec.footprint.width / 2;
-  const halfD = spec.footprint.depth / 2;
-  return {
-    minX: spec.x - halfW,
-    maxX: spec.x + halfW,
-    minZ: spec.z - halfD,
-    maxZ: spec.z + halfD,
-    minY: 0,
-    maxY: 1.2,
-  };
 }
 
 /** 释放一棵对象树可达的 geometry / material / texture；不依赖对象是否在场景里。 */
@@ -664,20 +765,123 @@ function disposeScene(scene: THREE.Scene): void {
   scene.clear();
 }
 
-export async function loadQingchuanInterior(): Promise<InteriorRuntime> {
+function addCeilingLight(scene: THREE.Scene, collector: PartCollector): void {
+  withPart(collector, 'ceiling-light', () => {
+    const disc = new THREE.Mesh(
+      new THREE.CircleGeometry(0.26, 28),
+      new THREE.MeshStandardMaterial({
+        color: 0xfff6e6,
+        emissive: 0xffe6b8,
+        emissiveIntensity: 0.9,
+        side: THREE.DoubleSide,
+      }),
+    );
+    disc.rotation.x = Math.PI / 2;
+    disc.position.set(1.66, INTERIOR.room.height - 0.01, 3.25);
+    scene.add(disc);
+    registerObject(disc);
+  });
+}
+
+/**
+ * 把 staging 中按世界坐标创建的部件收拢成 19 个实体组。
+ * 组原点 = 网格占格中心；子节点 = 原世界坐标 − 可见 AABB 中心，
+ * 因此外部模型原点偏移只在这里修正一次。
+ */
+function buildFurnitureRoots(
+  scene: THREE.Scene,
+  collector: PartCollector,
+  layout: ReadonlyFurnitureState,
+): Map<string, THREE.Group> {
+  const roots = new Map<string, THREE.Group>();
+  for (const definition of FURNITURE_DEFINITIONS) {
+    const id = instanceIdOf(definition);
+    const parts = collector.map.get(definition.id);
+    if (!parts || parts.length === 0) {
+      throw new Error(`家具 ${definition.name} 缺少几何部件`);
+    }
+    const instance = layout.items[id];
+    if (!instance) throw new Error(`家具布局缺少实例 ${id}`);
+    const bounds = new THREE.Box3();
+    for (const part of parts) {
+      part.updateMatrixWorld(true);
+      bounds.expandByObject(part);
+    }
+    if (!Number.isFinite(bounds.min.x) || !Number.isFinite(bounds.max.x)) {
+      throw new Error(`家具 ${definition.name} 的包围盒无效`);
+    }
+    const centerX = (bounds.min.x + bounds.max.x) / 2;
+    const centerZ = (bounds.min.z + bounds.max.z) / 2;
+    const span = footprintOf(instance);
+    const center = cellCenter(instance.cellX, instance.cellZ, span);
+    const group = new THREE.Group();
+    group.name = `furniture:${id}`;
+    group.position.set(center.x, 0, center.z);
+    group.rotation.y = (Math.PI / 2) * instance.quarterTurn;
+    group.userData.furnitureId = id;
+    group.userData.definitionId = definition.id;
+    for (const part of parts) {
+      part.position.x -= centerX;
+      part.position.z -= centerZ;
+      if (definition.visualOffsetZ) part.position.z += definition.visualOffsetZ;
+      group.add(part);
+    }
+    if (instance.status === 'placed') scene.add(group);
+    roots.set(id, group);
+  }
+  return roots;
+}
+
+function disposeAll(scene: THREE.Scene, roots: Iterable<THREE.Object3D>): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
+  const collect = (root: THREE.Object3D): void => {
+    root.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (mesh.geometry) geometries.add(mesh.geometry);
+      const mat = mesh.material;
+      if (!mat) return;
+      const list = Array.isArray(mat) ? mat : [mat];
+      for (const item of list) {
+        materials.add(item);
+        for (const value of Object.values(item)) {
+          if (value instanceof THREE.Texture) textures.add(value);
+        }
+      }
+    });
+  };
+  for (const root of roots) collect(root);
+  collect(scene);
+  for (const geometry of geometries) geometry.dispose();
+  for (const texture of textures) texture.dispose();
+  for (const material of materials) material.dispose();
+  scene.clear();
+}
+
+export async function loadQingchuanInterior(
+  layout: ReadonlyFurnitureState,
+): Promise<InteriorRuntime> {
   const scene = new THREE.Scene();
   scene.name = 'qingchuan-home-interior';
   scene.background = new THREE.Color(0xf4f1ea);
 
-  const colliders: Collider[] = [];
-  const occluders: Collider[] = [];
-  addRoomShell(scene, colliders, occluders);
-  addEntry(scene, colliders);
-  addBathroom(scene, colliders);
-  addKitchen(scene, colliders);
-  addPartition(scene, colliders, occluders);
-  addLivingDetails(scene, colliders);
+  const collector: PartCollector = { current: null, map: new Map() };
+  const shellColliders: Collider[] = [];
+  const shellOccluders: Collider[] = [];
+  const editHiddenOccluders: Collider[] = [];
+  addRoomShell(scene, shellColliders, shellOccluders);
+  addEntry(scene, collector);
+  addBathroom(scene, shellColliders, collector, editHiddenOccluders);
+  addKitchen(scene, collector);
+  addPartition(scene, shellColliders, shellOccluders, editHiddenOccluders);
+  addLivingDetails(scene, collector);
   addLights(scene);
+  addCeilingLight(scene, collector);
+  const editHiddenSet = new Set(editHiddenOccluders);
+  const editShellOccluders = shellOccluders.filter(
+    (collider) => !editHiddenSet.has(collider),
+  );
 
   const loader = new GLTFLoader();
   const specs = Object.values(INTERIOR.furniture);
@@ -703,33 +907,88 @@ export async function loadQingchuanInterior(): Promise<InteriorRuntime> {
     );
   }
 
+  const externalIdByAsset = new Map<string, string>();
+  for (const definition of FURNITURE_DEFINITIONS) {
+    if (definition.assetId) externalIdByAsset.set(definition.assetId, definition.id);
+  }
+
+  let roots = new Map<string, THREE.Group>();
   try {
     for (const { spec, model } of loaded) {
-      const group = new THREE.Group();
-      group.position.set(spec.x, 0, spec.z);
-      group.rotation.y = spec.rotationY;
-      group.add(model);
-      group.userData.assetId = spec.assetId;
-      group.userData.assetName = spec.name;
-      scene.add(group);
+      const definitionId = externalIdByAsset.get(spec.assetId);
+      if (!definitionId) throw new Error(`外部家具没有对应定义：${spec.assetId}`);
+      withPart(collector, definitionId, () => {
+        const wrapper = new THREE.Group();
+        // q 由实体组负责；这里保持模型自身朝向，避免与实体 q 叠加。
+        wrapper.position.set(spec.x, 0, spec.z);
+        wrapper.add(model);
+        wrapper.userData.assetId = spec.assetId;
+        wrapper.userData.assetName = spec.name;
+        scene.add(wrapper);
+        registerObject(wrapper);
+      });
     }
-    addBedding(scene);
-    for (const spec of specs) colliders.push(furnitureCollider(spec));
+    withPart(collector, 'bed', () => addBedding(scene));
+    roots = buildFurnitureRoots(scene, collector, layout);
   } catch (error) {
-    disposeScene(scene);
+    disposeAll(scene, roots.values());
     throw error;
   }
-  // 家具与墙体同时参与相机遮挡
-  occluders.push(...colliders);
+
+  const editHidden: Array<{ object: THREE.Object3D; visible: boolean }> = [];
+  scene.traverse((object) => {
+    if (object.userData.editHide === true) {
+      editHidden.push({ object, visible: object.visible });
+    }
+  });
+
+  let currentColliders: readonly Collider[] = shellColliders;
+  let currentOccluders: readonly Collider[] = shellOccluders;
+
+  const applyLayout = (next: ReadonlyFurnitureState): void => {
+    for (const definition of FURNITURE_DEFINITIONS) {
+      const id = instanceIdOf(definition);
+      const group = roots.get(id);
+      if (!group) continue;
+      const instance = next.items[id];
+      if (!instance) continue;
+      const span = footprintOf(instance);
+      const center = cellCenter(instance.cellX, instance.cellZ, span);
+      group.position.set(center.x, 0, center.z);
+      group.rotation.y = (Math.PI / 2) * instance.quarterTurn;
+      if (instance.status === 'placed') {
+        if (group.parent !== scene) scene.add(group);
+        group.visible = true;
+      } else if (group.parent === scene) {
+        scene.remove(group);
+      }
+    }
+    const dynamic = playerCollidersOf(next);
+    currentColliders = [...shellColliders, ...dynamic];
+    currentOccluders = [...shellOccluders, ...dynamic];
+  };
+  applyLayout(layout);
 
   const { wall, width, depth } = INTERIOR.room;
   return {
     scene,
-    colliders,
-    occluders,
+    get colliders() {
+      return currentColliders;
+    },
+    get occluders() {
+      return currentOccluders;
+    },
+    shellColliders,
+    shellOccluders,
+    editShellOccluders,
     bounds: { minX: wall, maxX: width - wall, minZ: wall, maxZ: depth - wall },
     spawn: INTERIOR.spawn,
     exit: INTERIOR.exit,
-    dispose: () => disposeScene(scene),
+    furnitureRoots: roots,
+    applyFurnitureLayout: applyLayout,
+    setFurnitureEditMode(active: boolean): void {
+      for (const entry of editHidden) entry.object.visible = active ? false : entry.visible;
+    },
+    dispose: () => disposeAll(scene, roots.values()),
   };
 }

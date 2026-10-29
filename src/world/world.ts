@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 世界编排 —— 第三人称摄像机、鼠标锁定、移动输入、入口交互、人物与建筑视觉调度。
  *
  * 职责边界：
@@ -22,6 +22,13 @@ import {
   type LayoutBuilding,
 } from '../features/city-layout';
 import type { ReadonlyEnvironmentState } from '../features/environment';
+import {
+  createFurnitureState,
+  findSafeStandingPose,
+  playerCollidersOf,
+  type FurnitureCommandResult,
+  type ReadonlyFurnitureState,
+} from '../features/furniture';
 import type { WorldSaveData } from '../infrastructure/storage';
 import {
   BuildingVisualFactory,
@@ -44,6 +51,12 @@ import {
   type PlayerUpdateResult,
 } from './player';
 import type { InteriorRuntime } from './interiors/qingchuan';
+import {
+  FurnitureEditor,
+  type FurnitureCandidate,
+  type FurnitureEditCommit,
+  type FurniturePanelRect,
+} from './interiors/furniture-editor';
 import {
   attachBuildingVisual,
   buildCityScene,
@@ -168,6 +181,27 @@ export interface WorldCallbacks {
   onCollisionReadyChange?(ready: boolean): void;
 }
 
+export interface FurnitureEditViewCallbacks {
+  onSelectionChange(id: string | null): void;
+  onCandidatesChange(candidates: readonly FurnitureCandidate[]): void;
+  onLayoutChange(layout: ReadonlyFurnitureState): void;
+  notify(message: string): void;
+}
+
+interface EditCameraSnapshot {
+  readonly position: THREE.Vector3;
+  readonly quaternion: THREE.Quaternion;
+  readonly up: THREE.Vector3;
+  readonly fov: number;
+  readonly near: number;
+  readonly far: number;
+  readonly yaw: number;
+  readonly pitch: number;
+  readonly desiredDistance: number;
+  readonly currentDistance: number;
+  readonly followTarget: THREE.Vector3;
+}
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -269,6 +303,13 @@ export class World {
   private interiorOccluders: readonly Collider[] = [];
   private interiorBounds: PlayerBounds | null = null;
   private interiorExit: { readonly x: number; readonly z: number; readonly radius: number } | null = null;
+  /** 家具编辑只存内存；不写 GameState。 */
+  private furnitureEditing = false;
+  private furnitureEditor: FurnitureEditor | null = null;
+  private furnitureLayout: ReadonlyFurnitureState | null = null;
+  private furnitureView: FurnitureEditViewCallbacks | null = null;
+  private furnitureCommit: FurnitureEditCommit | null = null;
+  private editCameraSnapshot: EditCameraSnapshot | null = null;
 
   constructor(container: HTMLElement, callbacks: WorldCallbacks = {}) {
     this.container = container;
@@ -622,6 +663,7 @@ export class World {
    */
   async enterInterior(
     validate?: () => boolean,
+    furniture?: ReadonlyFurnitureState,
   ): Promise<{ ok: boolean; message?: string }> {
     if (this.interiorMode !== 'outdoor') {
       return { ok: false, message: '正在切换场景，请稍候' };
@@ -637,9 +679,10 @@ export class World {
     const generation = this.interiorGeneration;
     this.clearInput();
 
+    const layout = furniture ?? createFurnitureState();
     try {
       const module = await import('./interiors/qingchuan');
-      const runtime = await module.loadQingchuanInterior();
+      const runtime = await module.loadQingchuanInterior(layout);
       if (this.disposed || generation !== this.interiorGeneration) {
         runtime.dispose();
         return { ok: false, message: '进入已取消' };
@@ -653,7 +696,29 @@ export class World {
         return { ok: false, message: '当前已不是可进入的个人住宅' };
       }
 
+      // 已保存布局可能把家具放在固定出生点。以最新布局和实际室内壳体检查；
+      // 出生点非法时只在出生点所属的固定壳体连通域内找安全点，不能穿墙。
+      const safeSpawn = findSafeStandingPose({
+        pose: runtime.spawn,
+        shell: runtime.shellColliders,
+        furniture: playerCollidersOf(layout),
+        bounds: runtime.bounds,
+        radius: INTERIOR.player.collisionRadius,
+        edgeMargin: PLAYER.radius,
+      });
+      if (!safeSpawn) {
+        runtime.dispose();
+        this.interiorMode = 'outdoor';
+        this.outdoorSnapshot = null;
+        this.notifyCollisionReadyChange(this.isCollisionReady());
+        return {
+          ok: false,
+          message: '住宅出生点被家具占用，且没有安全落脚点；请先整理家具',
+        };
+      }
+
       this.interior = runtime;
+      this.furnitureLayout = layout;
       this.interiorColliders = runtime.colliders;
       this.interiorOccluders = runtime.occluders;
       this.interiorBounds = runtime.bounds;
@@ -661,13 +726,17 @@ export class World {
 
       this.city.scene.remove(this.player.group);
       runtime.scene.add(this.player.group);
-      this.player.restore(runtime.spawn);
+      this.player.restore({
+        x: safeSpawn.x,
+        z: safeSpawn.z,
+        facing: runtime.spawn.facing,
+      });
 
       this.yaw = INTERIOR.camera.spawnYaw;
       this.pitch = INTERIOR.camera.pitch.default;
       this.desiredDistance = INTERIOR.camera.distance.default;
       this.currentDistance = this.desiredDistance;
-      this.followTarget.set(runtime.spawn.x, INTERIOR.camera.targetHeight, runtime.spawn.z);
+      this.followTarget.set(safeSpawn.x, INTERIOR.camera.targetHeight, safeSpawn.z);
       this.placeInteriorCamera(0, true);
       this.nearbyBuilding = null;
       this.interiorMode = 'indoor';
@@ -695,6 +764,7 @@ export class World {
     }
     if (this.interiorMode !== 'indoor' || !this.interior || !this.outdoorSnapshot) return false;
 
+    this.cancelFurnitureEdit();
     const snapshot = this.outdoorSnapshot;
     this.interior.scene.remove(this.player.group);
     this.city.scene.add(this.player.group);
@@ -704,6 +774,7 @@ export class World {
     this.interiorOccluders = [];
     this.interiorBounds = null;
     this.interiorExit = null;
+    this.furnitureLayout = null;
     this.outdoorSnapshot = null;
     this.interiorMode = 'outdoor';
     this.setCameraProjection(CAMERA.fov, CAMERA.near, CAMERA.far);
@@ -736,6 +807,7 @@ export class World {
    * 加载中只递增代次，迟到结果会被 enterInterior 释放；已在室内则恢复室外快照。
    */
   cancelInterior(): void {
+    this.cancelFurnitureEdit();
     if (this.interiorMode === 'loading') {
       this.interiorGeneration += 1;
       this.interiorMode = 'outdoor';
@@ -745,6 +817,229 @@ export class World {
     }
     if (this.interiorMode === 'indoor') this.exitInterior();
   }
+
+  /* ------------------------------------------------------------ 家具编辑 */
+
+  isFurnitureEditing(): boolean {
+    return this.furnitureEditing;
+  }
+
+  getFurnitureLayout(): ReadonlyFurnitureState | null {
+    return this.furnitureLayout;
+  }
+
+  applyFurnitureLayout(layout: ReadonlyFurnitureState): void {
+    this.furnitureLayout = layout;
+    if (!this.interior) return;
+    this.interior.applyFurnitureLayout(layout);
+    this.interiorColliders = this.interior.colliders;
+    this.interiorOccluders = this.interior.occluders;
+    this.furnitureEditor?.setLayout(layout);
+  }
+
+  /**
+   * 进入家具编辑态。调用方必须先确认在室内、无面板且未在加载。
+   * 编辑只锁人物，不暂停经济。
+   */
+  enterFurnitureEdit(
+    handlers: FurnitureEditCommit,
+    view: FurnitureEditViewCallbacks,
+  ): { ok: boolean; message?: string } {
+    if (this.furnitureEditing) return { ok: true };
+    if (this.interiorMode !== 'indoor' || !this.interior || !this.interiorBounds) {
+      return { ok: false, message: '只能在个人住宅内编辑家具' };
+    }
+    if (this.disposed) return { ok: false, message: '世界已销毁' };
+
+    this.furnitureEditing = true;
+    this.furnitureView = view;
+    this.editCameraSnapshot = {
+      position: this.camera.position.clone(),
+      quaternion: this.camera.quaternion.clone(),
+      up: this.camera.up.clone(),
+      fov: this.camera.fov,
+      near: this.camera.near,
+      far: this.camera.far,
+      yaw: this.yaw,
+      pitch: this.pitch,
+      desiredDistance: this.desiredDistance,
+      currentDistance: this.currentDistance,
+      followTarget: this.followTarget.clone(),
+    };
+    this.furnitureCommit = {
+      move: (id, cellX, cellZ) =>
+        this.runFurnitureAction(() => handlers.move(id, cellX, cellZ)),
+      rotate: (id, direction) =>
+        this.runFurnitureAction(() => handlers.rotate(id, direction)),
+      store: (id) => this.runFurnitureAction(() => handlers.store(id)),
+      place: (id, cellX, cellZ) =>
+        this.runFurnitureAction(() => handlers.place(id, cellX, cellZ)),
+    };
+    this.clearInput();
+    this.interior.setFurnitureEditMode(true);
+    this.player.group.visible = false;
+    this.furnitureView.onSelectionChange(null);
+    try {
+      this.furnitureEditor = new FurnitureEditor({
+        scene: this.interior.scene,
+        camera: this.camera,
+        domElement: this.renderer.domElement,
+        runtime: this.interior,
+        layout: this.furnitureLayout ?? createFurnitureState(),
+        commit: this.furnitureCommit,
+        callbacks: {
+          onSelectionChange: (id) => this.furnitureView?.onSelectionChange(id),
+          onCandidatesChange: (candidates) =>
+            this.furnitureView?.onCandidatesChange(candidates),
+          notify: (message) => this.furnitureView?.notify(message),
+        },
+      });
+    } catch (error) {
+      this.teardownFurnitureEdit(false);
+      return { ok: false, message: `无法进入家具编辑：${describeError(error)}` };
+    }
+    // 先设置 editing 门禁，再释放鼠标；否则 pointerlockchange 会弹暂停菜单。
+    this.exitPointerLock();
+    return { ok: true };
+  }
+
+  /** 尝试退出编辑；若人物被家具覆盖且找不到安全点，保持编辑态。 */
+  exitFurnitureEdit(): { ok: boolean; message?: string } {
+    if (!this.furnitureEditing) return { ok: true };
+    const pose = this.player.pose();
+    if (!this.isInteriorPoseFree(pose.x, pose.z)) {
+      const safe = this.findSafeInteriorPose(pose);
+      if (!safe) {
+        return { ok: false, message: '请先为人物腾出站立空间，再退出编辑' };
+      }
+      this.player.restore({ x: safe.x, z: safe.z, facing: pose.facing });
+    }
+    this.teardownFurnitureEdit(true);
+    return { ok: true };
+  }
+
+  /** 读档、新游戏、离开住宅、dispose 前丢弃编辑会话，不做安全落点。 */
+  cancelFurnitureEdit(): void {
+    if (!this.furnitureEditing) return;
+    this.teardownFurnitureEdit(false);
+  }
+
+  cancelFurnitureDrag(): void {
+    this.furnitureEditor?.cancelDrag();
+  }
+
+  startWarehouseDrag(
+    id: string,
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+  ): void {
+    this.furnitureEditor?.startWarehouseDrag(id, pointerId, clientX, clientY);
+  }
+
+  updateWarehouseDrag(pointerId: number, clientX: number, clientY: number): void {
+    this.furnitureEditor?.updateWarehouseDrag(pointerId, clientX, clientY);
+  }
+
+  endWarehouseDrag(pointerId: number, clientX: number, clientY: number): void {
+    this.furnitureEditor?.endWarehouseDrag(pointerId, clientX, clientY);
+  }
+
+  updateFurnitureEdit(dtSeconds: number, paused: boolean): void {
+    if (this.furnitureEditing) this.furnitureEditor?.update(dtSeconds, paused);
+  }
+
+  setFurniturePanelRect(rect: FurniturePanelRect | null): void {
+    this.furnitureEditor?.setPanelRect(rect);
+  }
+
+  selectFurniture(id: string): void {
+    this.furnitureEditor?.selectById(id);
+  }
+
+  private runFurnitureAction(action: () => FurnitureCommandResult): FurnitureCommandResult {
+    const result = action();
+    if (result.ok && result.layout) {
+      this.applyFurnitureLayout(result.layout);
+      this.furnitureView?.onLayoutChange(result.layout);
+    }
+    return result;
+  }
+
+  private teardownFurnitureEdit(restoreCamera: boolean): void {
+    const editor = this.furnitureEditor;
+    this.furnitureEditor = null;
+    editor?.dispose();
+    this.interior?.setFurnitureEditMode(false);
+    this.player.group.visible = true;
+    const view = this.furnitureView;
+    const snapshot = this.editCameraSnapshot;
+    this.furnitureEditing = false;
+    this.furnitureView = null;
+    this.furnitureCommit = null;
+    this.editCameraSnapshot = null;
+    view?.onSelectionChange(null);
+    if (restoreCamera && snapshot) {
+      this.yaw = snapshot.yaw;
+      this.pitch = snapshot.pitch;
+      this.desiredDistance = snapshot.desiredDistance;
+      this.currentDistance = snapshot.currentDistance;
+      this.followTarget.copy(snapshot.followTarget);
+      this.camera.up.copy(snapshot.up);
+      this.setCameraProjection(snapshot.fov, snapshot.near, snapshot.far);
+      this.placeInteriorCamera(0, true);
+    } else if (snapshot) {
+      this.camera.up.copy(snapshot.up);
+      this.setCameraProjection(snapshot.fov, snapshot.near, snapshot.far);
+    }
+    this.clearInput();
+  }
+
+  private isInteriorPoseFree(x: number, z: number): boolean {
+    const bounds = this.interiorBounds;
+    if (!bounds) return false;
+    const edge = PLAYER.radius;
+    const radius = INTERIOR.player.collisionRadius;
+    if (
+      !(x > bounds.minX + edge && x < bounds.maxX - edge) ||
+      !(z > bounds.minZ + edge && z < bounds.maxZ - edge)
+    ) {
+      return false;
+    }
+    for (const collider of this.interiorColliders) {
+      if (this.hits2D(x, z, collider, radius)) return false;
+    }
+    return true;
+  }
+
+  private hits2D(x: number, z: number, collider: Collider, radius: number): boolean {
+    return (
+      x > collider.minX - radius &&
+      x < collider.maxX + radius &&
+      z > collider.minZ - radius &&
+      z < collider.maxZ + radius
+    );
+  }
+
+  /**
+   * 退出编辑的安全落点：
+   * 1. 原地合法就保留；
+   * 2. 被家具覆盖时，只临时忽略这些家具，固定壳体始终是障碍；
+   * 3. 先试最小轴推出，再从起点（允许非法）做四方向 Dijkstra；
+   * 4. 线段检查固定墙体，避免跨过薄墙。
+   */
+  private findSafeInteriorPose(pose: PlayerPose): { x: number; z: number } | null {
+    if (!this.interiorBounds) return null;
+    return findSafeStandingPose({
+      pose,
+      shell: this.interior?.shellColliders ?? [],
+      furniture: this.furnitureLayout ? playerCollidersOf(this.furnitureLayout) : [],
+      bounds: this.interiorBounds,
+      radius: INTERIOR.player.collisionRadius,
+      edgeMargin: PLAYER.radius,
+    });
+  }
+
 
   /* ---------------------------------------------------------- 位置修正 */
 
@@ -1123,7 +1418,7 @@ export class World {
 
   update(dtMoveSeconds: number, canMove: boolean, moveMultiplier = 1): PlayerUpdateResult {
     if (this.interiorMode === 'indoor' && this.interiorBounds) {
-      const canMoveNow = canMove && !this.disposed;
+      const canMoveNow = canMove && !this.disposed && !this.furnitureEditing;
       this.movementAllowed = canMoveNow;
       const dir = canMoveNow ? this.readMoveDirection() : { x: 0, z: 0 };
       return this.player.update(
@@ -1201,6 +1496,11 @@ export class World {
 
   /** 摄像机位置与遮挡。dt 用真实时间，不随经济倍率变化。 */
   render(dtSeconds: number): void {
+    if (this.furnitureEditing && this.interior) {
+      // 编辑相机由 FurnitureEditor 每帧写入；不执行跟随、遮挡和人物 visible 强制写。
+      this.renderer.render(this.interior.scene, this.camera);
+      return;
+    }
     if (this.interiorMode === 'indoor' && this.interior) {
       this.placeInteriorCamera(dtSeconds, false);
       this.renderer.render(this.interior.scene, this.camera);
@@ -1302,6 +1602,7 @@ export class World {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.furnitureEditor?.resize();
   }
 
   /**
@@ -1387,6 +1688,7 @@ export class World {
    */
   dispose(): void {
     this.disposed = true;
+    this.cancelFurnitureEdit();
     this.interiorGeneration += 1;
     this.cancelVisualRequests();
     if (this.interior) {

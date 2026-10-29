@@ -1475,8 +1475,8 @@ S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100�
 
 - 进入前记录当前室外 `WorldSaveData`（人物、相机、revision）。
   加载中/室内调用 `getSaveData()` 一律返回该快照，所以手动保存、自动保存与导出都会回到楼外。
-- 不新增 `world.location/residenceId` 字段，不改 `SAVE.formatVersion = 19`、`WorldSaveData`
-  结构或迁移链；再次进入时固定布局不变。
+- 不新增 `world.location/residenceId` 字段，不改 `WorldSaveData` 结构；`SAVE.formatVersion`
+  已因家具切片升为 20。再次进入时按最新 `GameState.furniture` 恢复布局。
 - 读档与 `startNewGame()` 在 `store.replace` 之前调用 `invalidateResidenceRequest()` 与 `world.cancelInterior()`，
   再清 `interiorLoading`；`World.restore()` / `resetToSpawn()` / `dispose()` 也会再调用一次 `cancelInterior()`，
   `Game.dispose()` 同时递增 app 请求代次。
@@ -1494,6 +1494,57 @@ S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100�
   灯光只移除不释放资源；不触碰 `player.group`、城市楼体工厂或 renderer。
 - `World.dispose()` 先递增代次、取消城市视觉请求，再摘出 `player.group`、释放室内场景，
   然后按既有顺序释放城市与环境资源。
+
+## 三十、个人住宅家具编辑契约（存档 v20）
+
+### 数据
+
+- 唯一住宅 `home-001`、`layoutVersion = 1`、精确 19 件实例；ID 为 `home-001.<definition>-01`。
+- 每件只持久化 `status`、`cellX/cellZ`、未旋转局部整数格宽深与 `quarterTurn(0..3)`；
+  定义、资产、安装高度、模型校正、可见包络与人物局部碰撞只在 `content/interior.ts`。
+- 固定种子只用于 `createInitialState` 与 `v19→v20` 迁移；进入住宅/读档不重新量化。
+- 仓库由 `status === 'stored'` 派生，不新增第二份仓库数组；收纳保留格位与朝向。
+- 占用 Map 从已提交布局派生，只用于预览/候选，不入档、不作阻挡；允许重叠。
+
+### 网格
+
+- 格长 0.05m，原点为墙体中心线 `(0,0)`；`cellX/cellZ` 为旋转后占格最小格。
+- 可放整格范围：X `[1,65]`、Z `[1,123]`（占格矩形落在 `[0.05,3.25]×[0.05,6.15]`）。
+- 中心 `(cell + span/2) × 0.05`；反推固定为 `floor(center/0.05 - span/2 + 0.5 + 1e-6)` 后夹取。
+- 旋转按 q±1 mod 4，以当前占格中心为目标，一次提交同时改 q 与新锚点；奇偶尺寸半格规则固定。
+
+### 命令与保存
+
+- `features/furniture` 的 move/rotate/store/place 是纯规则；`app/furniture` 每次 `store.run`
+  原子提交并请求原自动保存；World/UI 不持有 GameStore。
+- 编辑会话用 app 代次 + World 编辑状态双重校验；读档、新游戏、离开住宅、dispose 先丢弃会话与拖动。
+- `SAVE.formatVersion = 20`；`v19→v20` 只补家具种子，不改经济、房地产、时间、天气、
+  `WorldSaveData`、数据库或槽位。旧档缺切片由迁移补，不在查询/UI 补造。
+- 校验固定住宅/版本/19 ID/ID 映射/状态/q/整数格/尺寸/范围；重叠合法；缺失、重复、未知拒绝。
+- 室内 `WorldSaveData` 仍是进入前室外快照；家具布局来自最新 GameState，读档仍回楼外。
+
+### 输入、相机与界面
+
+- E 只在室内且无面板/加载时进入或退出；Esc 先退出编辑；Tab/F 先尝试退出，失败则不继续原动作。
+- `requestPointerLock`、`pointerlockchange`、锁鼠标遮罩都识别编辑态；进入先设门禁再释放鼠标。
+- 编辑相机复用同一 PerspectiveCamera/RAF，俯视并扣除右侧仓库；保存恢复 camera.up、
+  view offset、原镜头、人物可见性和临时隐藏节点；不执行原室内遮挡/高度钳制。
+- 射线顺序面板 → 图标 → 可见家具 → 水平面；图标优先并消费指针；重叠提供候选切换。
+- 拖动透明预览、占格高亮、pointerup 最终重算后提交；blur/cancel/lostpointercapture/隐藏/面板/读档取消。
+- 字符/2D 图片不能替代 3D 图标；本轮图标为项目内程序化几何，无外部资产。
+
+### 人物碰撞与安全落点
+
+- 人物碰撞与可见 AABB 分离；地毯、地垫、镜子、台灯、吊柜、烟机、吸顶灯不挡人；
+  淋浴仅玻璃条、盆栽仅花盆、床仅床架+床垫、马桶不含座圈外挑、柜体不含台面外挑。
+- 动态碰撞每次提交重建；已收纳移除；相机遮挡单独生成，不把地面/高处薄片当障碍。
+- 退出时原地合法则保留；被家具覆盖时搜索阶段暂时忽略所有可移动家具，只以固定壳体/
+  人物边界建立原站位连通域；允许非法起点入队，最小轴推出、相邻格与起点首段都检查
+  固定墙体线段。最终落点仍检查全部家具碰撞；找不到安全点保持编辑态并提示，
+  不移动家具、不忽略最终碰撞、不穿墙。
+- 进入住宅时用最新布局检查出生点；被家具覆盖时在出生点固定壳体连通域找合法点，
+  找不到则中止进入、释放已加载室内资源、恢复室外并提示。
+- 仓库拖出只有指针投影落在房间内表面以内才提交；房间内拖动仍允许边界夹取。
 
 ## 城市装饰街区与显示会话（2026-10-29）
 
