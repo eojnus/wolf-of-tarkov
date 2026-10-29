@@ -1494,3 +1494,12 @@ S新 = S旧 + clamp(0.20 × (T − S旧), −4, 4)        （clamp 到 0～100�
   灯光只移除不释放资源；不触碰 `player.group`、城市楼体工厂或 renderer。
 - `World.dispose()` 先递增代次、取消城市视觉请求，再摘出 `player.group`、释放室内场景，
   然后按既有顺序释放城市与环境资源。
+
+## 城市装饰街区与显示会话（2026-10-29）
+
+- `planCityBlocks(readonlyLayout)` 不写回 cityLayout；装饰不创建公司、房源、产权、账户或 GDP。
+- `generateTemplateBlock` 按 familyId+templateVersion 解析；不支持的版本返回 skip，不回落到最新版。完整模板提供四侧端口，外围道路由调用方负责；现有条带使用裁剪变体。
+- 共墙闭窗和包络来自同源规划；占位在加载开始即显示，成功替换，失败保留，移除时取消请求并释放本块资源。
+- `World.beginDisplaySession` 只用于读档/新游戏前的显示会话切换；普通布局同步、扩张或公司绑定刷新不得清空当前抑制。
+- 读档仍先同步布局，再恢复原位置，最终碰撞就绪后只修正非法位置。显示会话切换须保留既有住宅室内取消和异步代次保护。
+- 不新增存档切片或版本迁移。已知视觉/性能边界见 `city-block-realism-integration.md`。

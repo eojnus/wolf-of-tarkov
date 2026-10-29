@@ -52,6 +52,9 @@ import {
   type CityScene,
   type Collider,
 } from './scene';
+import { CityBlocks, type BlocksReport } from './blocks/scene';
+import { insideAnyRect, planCityBlocks, type Rect } from './blocks/plan';
+import { SceneryAssetLibrary } from './scenery/assets';
 
 const MOVE_KEYS: Record<string, keyof MoveInput> = {
   KeyW: 'forward',
@@ -176,6 +179,8 @@ export interface WorldVisualReport {
   readonly placeholder: readonly string[];
   readonly failures: readonly string[];
   readonly assets: BuildingVisualFactoryStats;
+  /** 装饰街区诊断：块数、在途、被抑制的块、降级与错误。 */
+  readonly blocks: BlocksReport;
 }
 
 /** 城区 id → 已存模板版本。用于视觉种子，绝不以全城 layoutVersion 或 revision 代替。 */
@@ -206,7 +211,18 @@ export class World {
   private layoutFingerprintValue: string;
   /** 当前布局的建筑实例与碰撞体（与场景同源）。 */
   private handles: readonly BuildingHandle[] = [];
+  /** 人物移动用的合并碰撞集合（业务建筑 + 装饰街区）。 */
   private colliders: Collider[] = [];
+  /** 业务建筑碰撞盒：旧档位置修正**只**用它，保持既有行为不变。 */
+  private buildingColliders: Collider[] = [];
+  /** 街景资产库：铺装贴图、街景材质与外部模型的唯一拥有者。 */
+  private readonly sceneryLibrary = new SceneryAssetLibrary();
+  /** 装饰街区：只读规划产物 + 场景装配 + 自己的碰撞盒。 */
+  private readonly blocks: CityBlocks;
+  /** 已打印过跳过原因的站点 id：避免每次布局同步重复刷屏。 */
+  private readonly reportedSkips = new Set<string>();
+  /** 规划期产出的步行域（街道带 + 街区铺装），旧档恢复只在这些区域里找落点。 */
+  private walkable: Rect[] = [];
   /** 人物移动、位置修正、地面渲染共用的动态边界。 */
   private bounds: LayoutBounds;
   private layoutRevision = 0;
@@ -273,9 +289,11 @@ export class World {
     this.layoutRevision = initialLayout.revision;
     this.bounds = { ...initialLayout.bounds };
     this.districtVersions = districtVersionsOf(initialLayout);
-    this.city = buildCityScene(initialLayout, this.visualFactory);
+    this.city = buildCityScene(initialLayout, this.visualFactory, this.sceneryLibrary);
+    this.blocks = new CityBlocks(this.city.scene, this.visualFactory, this.sceneryLibrary);
     this.handles = this.city.buildings;
-    this.colliders = this.handles.map((handle) => handle.collider);
+    this.rebuildColliders();
+    this.planBlocks(initialLayout);
     this.player = new Player();
     this.city.scene.add(this.player.group);
 
@@ -308,6 +326,23 @@ export class World {
   /* ---------------------------------------------------------- 布局同步 */
 
   /**
+   * 开始一次新的"世界显示会话"：读档、导入存档、重新开始游戏时由 app 层调用。
+   *
+   * 做两件事：
+   *  1. 清掉上一份进度留下的**装饰抑制**记录（抑制只在本会话内有效，不写存档）；
+   *  2. 把布局指纹置空，让紧接着的 `syncLayout()` 一定真正执行——
+   *     否则"读同一份布局"会被指纹提前返回拦住，抑制过的街区永远回不来。
+   *
+   * 之后的冲突检查仍按该存档的真实玩家位置执行，仍有冲突时可以重新抑制。
+   */
+  beginDisplaySession(): void {
+    this.blocks.beginDisplaySession();
+    // 只清指纹，不在这里取消在途请求：紧接着的 `syncLayout()` 本身会先取消再按新布局
+    // 重新请求。若在这里提前取消、而调用方没有紧跟一次同步，在途楼体会停在占位上。
+    this.layoutFingerprintValue = '';
+  }
+
+  /**
    * 同步逻辑地图 —— 按稳定 id 增量建/删建筑与道路实例，不销毁重建整个 World。
    *
    * app 层约定：构造后、新游戏、读档后、以及检测到 `cityLayout.revision` 变化时调用。
@@ -330,7 +365,8 @@ export class World {
 
     this.city.syncLayout(layout);
     this.handles = this.city.buildings;
-    this.colliders = this.handles.map((handle) => handle.collider);
+    this.rebuildColliders();
+    this.planBlocks(layout);
     // 城区扩张后雾的基数随边界变化；天气修饰仍由环境系统叠加
     this.environment.setFogBase(this.city.fogBase.near, this.city.fogBase.far);
 
@@ -509,6 +545,7 @@ export class World {
       placeholder,
       failures: [...this.visualFallbacks],
       assets: this.visualFactory.stats(),
+      blocks: this.blocks.report(),
     };
   }
 
@@ -730,8 +767,8 @@ export class World {
     let corrected = x !== pose.x || z !== pose.z;
 
     // 相邻建筑的修正可能互相影响，按建筑数量设置上限逐个解决；正常位置直接跳过。
-    for (let pass = 0; pass < this.colliders.length; pass += 1) {
-      const hit = this.colliders.find(
+    for (let pass = 0; pass < this.buildingColliders.length; pass += 1) {
+      const hit = this.buildingColliders.find(
         (collider) =>
           x > collider.minX - PLAYER.radius &&
           x < collider.maxX + PLAYER.radius &&
@@ -770,11 +807,128 @@ export class World {
     this.refreshNearbyBuilding();
   }
 
+  /* ---------------------------------------------------------- 碰撞集合 */
+
+  /** 合并碰撞集合：业务建筑在前、装饰街区在后，顺序稳定。 */
+  private rebuildColliders(): void {
+    this.buildingColliders = this.handles.map((handle) => handle.collider);
+    const scenery: Collider[] = this.blocks.colliders.map((item) => ({
+      minX: item.minX,
+      maxX: item.maxX,
+      minZ: item.minZ,
+      maxZ: item.maxZ,
+      minY: item.minY,
+      maxY: item.maxY,
+    }));
+    this.colliders = [...this.buildingColliders, ...scenery];
+  }
+
+  /* ---------------------------------------------------------- 街区规划 */
+
+  /**
+   * 按**当前真实布局**规划装饰街区。
+   *
+   * 规划器只读布局与配置；硬门槛不满足时整块跳过（不产出几何与碰撞），
+   * 因此不会出现"半截街区"或看不见的障碍。
+   */
+  private planBlocks(layout: CityLayoutView): void {
+    const result = planCityBlocks(layout);
+    this.blocks.sync(result.blocks);
+    this.walkable = [...result.streetWalkable, ...result.blocks.flatMap((block) => block.walkable)];
+    // 跳过原因只在首次出现时打印：布局每次同步都会重算，重复刷同一批警告没有信息量
+    for (const item of result.skipped) {
+      if (this.reportedSkips.has(item.id)) continue;
+      this.reportedSkips.add(item.id);
+      console.warn(`[world] 街区跳过：${item.id} —— ${item.reasons.join('；')}`);
+    }
+    this.rebuildColliders();
+  }
+
+  /**
+   * 旧档恢复：**只处理新增装饰造成的冲突**。
+   *
+   * 前提：`ensurePlayerNotInsideBuildings()` 已经用业务建筑碰撞把位置修正过了，
+   * 这里只在"位置合法但与装饰相撞"时介入，且绝不传送到未经验证的位置：
+   *  1. 取命中的装饰块，按单个盒做四轴最小推出 → 得到唯一候选；
+   *  2. 候选必须同时通过三重校验（完整碰撞集合 / 人物边界 / 规划步行域）；
+   *  3. 不通过则**抑制**这些装饰块（只在本会话生效，不写存档，几何与碰撞同步移除），
+   *     玩家留在原地；
+   *  4. 抑制后仍非法就保留原位置并记录诊断 —— 不回退到出生点、不再尝试第二次。
+   */
+  private resolveSceneryConflict(): void {
+    const pose = this.player.pose();
+    const hits = this.blocks.hitBlockIdsAt(pose.x, pose.z, PLAYER.radius);
+    if (hits.length === 0) return;
+
+    const candidate = this.minimalSceneryPush(pose.x, pose.z);
+    if (candidate && this.isTrustedStanding(candidate.x, candidate.z)) {
+      this.player.restore({ x: candidate.x, z: candidate.z, facing: pose.facing });
+      this.placeCamera(0, true);
+      this.refreshNearbyBuilding();
+      return;
+    }
+
+    // 降级：抑制冲突块，保留原位置
+    for (const blockId of hits) {
+      this.blocks.suppress(blockId);
+      console.warn(`[world] 旧档位置与装饰街区冲突，已临时抑制 ${blockId}（仅本次会话，不写存档）`);
+    }
+    this.rebuildColliders();
+    this.refreshNearbyBuilding();
+  }
+
+  /** 对命中的单个装饰盒做四轴最小推出；只返回一个候选，不做搜索。 */
+  private minimalSceneryPush(x: number, z: number): { x: number; z: number } | null {
+    const hit = this.blocks.colliders.find(
+      (item) =>
+        x > item.minX - PLAYER.radius &&
+        x < item.maxX + PLAYER.radius &&
+        z > item.minZ - PLAYER.radius &&
+        z < item.maxZ + PLAYER.radius,
+    );
+    if (!hit) return null;
+    const toWest = x - (hit.minX - PLAYER.radius);
+    const toEast = hit.maxX + PLAYER.radius - x;
+    const toSouth = z - (hit.minZ - PLAYER.radius);
+    const toNorth = hit.maxZ + PLAYER.radius - z;
+    const smallest = Math.min(toWest, toEast, toSouth, toNorth);
+    if (smallest === toWest) return { x: hit.minX - PLAYER.radius, z };
+    if (smallest === toEast) return { x: hit.maxX + PLAYER.radius, z };
+    if (smallest === toSouth) return { x, z: hit.minZ - PLAYER.radius };
+    return { x, z: hit.maxZ + PLAYER.radius };
+  }
+
+  /**
+   * 可信落点：完整碰撞集合不相交 + 在人物边界内 + 落在规划步行域里。
+   *
+   * 第三条是关键：只证明"不碰撞"不够，还必须证明落点在有铺装的通行区域，
+   * 否则可能把玩家推进一个四面围合的空腔。
+   */
+  private isTrustedStanding(x: number, z: number): boolean {
+    for (const collider of this.colliders) {
+      if (
+        x > collider.minX - PLAYER.radius &&
+        x < collider.maxX + PLAYER.radius &&
+        z > collider.minZ - PLAYER.radius &&
+        z < collider.maxZ + PLAYER.radius
+      ) {
+        return false;
+      }
+    }
+    const minX = this.bounds.minX + PLAYER_EDGE_MARGIN;
+    const maxX = this.bounds.maxX - PLAYER_EDGE_MARGIN;
+    const minZ = this.bounds.minZ + PLAYER_EDGE_MARGIN;
+    const maxZ = this.bounds.maxZ - PLAYER_EDGE_MARGIN;
+    if (x < minX || x > maxX || z < minZ || z > maxZ) return false;
+    return insideAnyRect(this.walkable, x, z, PLAYER.radius * 0.5);
+  }
+
   /** 碰撞就绪后：如果读档时原位置非法，做一次最小必要推出。 */
   private applyPendingRestoreCorrection(): void {
     if (this.pendingRestorePose === null) return;
     this.pendingRestorePose = null;
     this.ensurePlayerNotInsideBuildings();
+    this.resolveSceneryConflict();
   }
 
   /** 人物资源是交付要求；失败时保留占位模型并在控制台明确报错。 */
@@ -1203,6 +1357,7 @@ export class World {
       // 模型已就绪：立即用最终碰撞体做一次「仅非法时」修正
       this.pendingRestorePose = null;
       this.ensurePlayerNotInsideBuildings();
+      this.resolveSceneryConflict();
     } else {
       // 模型仍在加载：保留 pose，等碰撞就绪后再修正；期间由 app 锁移动与交互
       this.pendingRestorePose = pose;
@@ -1220,6 +1375,8 @@ export class World {
     this.clearInput();
     this.placeCamera(0, true);
     this.refreshNearbyBuilding();
+    // 出生点同样可能落在新增装饰里：沿用同一套"只处理装饰冲突"的处理
+    this.resolveSceneryConflict();
   }
 
   /**
@@ -1255,7 +1412,10 @@ export class World {
     document.removeEventListener('pointerlockchange', this.pointerLockHandler);
     this.player.dispose();
     this.environment.dispose();
+    // 顺序不能改：装饰街区 -> 场景（含路网）-> 街景共享库 -> 建筑工厂
+    this.blocks.dispose();
     this.city.dispose();
+    this.sceneryLibrary.dispose();
     this.visualFactory.dispose();
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement === this.container) {

@@ -1,6 +1,6 @@
 {
   "schema": "wolf-city-building-visuals/1",
-  "generatedFor": "feature/city-building-integration 正式地图接入（模块化建筑为唯一建筑外观路径）",
+  "generatedFor": "feature/city-block-realism 阶段 1：东岗街坊 + 道路与人行道升级",
   "license": {
     "spdx": "CC0-1.0",
     "deed": "https://creativecommons.org/publicdomain/zero/1.0/",
@@ -134,15 +134,155 @@
         "直接使用 Poly Haven 1K JPEG 原图，未重采样、未二次压缩",
         "同一张 ARM 同时驱动粗糙度与金属度"
       ],
-      "tileMeters": 3.0,
+      "tileMeters": 3,
       "usage": "办公/银行/证券标准层外墙肋纹板材；市政与商业风格的基座与层间线脚"
+    },
+    {
+      "id": "street_tree_quiver_tree_01",
+      "kind": "model",
+      "page": "https://polyhaven.com/a/quiver_tree_01",
+      "name": "Quiver Tree 01",
+      "author": "Poly Haven",
+      "license": "CC0-1.0",
+      "downloadUrl": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/quiver_tree_01/quiver_tree_01_1k.gltf",
+      "downloadedFormat": "glTF 2.0 + 外部 bin + 1K JPEG",
+      "localPath": "public/assets/city-realism/models/street-tree.glb",
+      "bytes": 733680,
+      "originalBytes": 8880481,
+      "triangles": 12660,
+      "originalTriangles": 150124,
+      "textures": {
+        "count": 6,
+        "resolution": "512x512",
+        "channels": [
+          "baseColor(jpg)",
+          "normal(jpg)",
+          "arm(jpg)"
+        ]
+      },
+      "optimization": [
+        "gltf-transform 4：weld + simplify(ratio 0.05) 把 150,124 面降到 12,660 面（全城推广后按总面数回收）",
+        "叶片材质由 BLEND 改为 OPAQUE：贴图是 JPEG 不带 alpha，混合没有收益，改为不透明后还能正常投下阴影",
+        "textureCompress 把 1K 贴图降采样到 512 并转 JPEG；重打包为单文件 GLB"
+      ],
+      "geometry": {
+        "rawSizeMeters": [
+          1.181,
+          2.715,
+          0.968
+        ],
+        "crownAfterFit5_6": [
+          2.44,
+          2
+        ],
+        "trunkDiameterAfterFit": 0.54,
+        "lowestLeafHeight": 1.96
+      },
+      "usage": "东岗街坊行道树 6 棵（间距 4.5 m）+ 庭院树 5 棵；实例化渲染，几何与材质全城共享",
+      "honestNote": "箭袋树（Quiver Tree）是沙漠肉质乔木，冠形直立偏窄，不是阔叶行道树；换它是因为上一版冷杉幼树冠幅达 11.8 m（高度 5.6 m 的 2.1 倍），必然穿插立面与相邻树冠。"
+    },
+    {
+      "id": "street_lamp_01",
+      "kind": "model",
+      "page": "https://polyhaven.com/a/street_lamp_01",
+      "name": "Street Lamp 01",
+      "author": "Poly Haven",
+      "license": "CC0-1.0",
+      "downloadUrl": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/street_lamp_01/street_lamp_01_1k.gltf",
+      "downloadedFormat": "glTF 2.0 + 外部 bin + 1K JPEG",
+      "localPath": "public/assets/city-realism/models/street-lamp.glb",
+      "bytes": 575812,
+      "originalBytes": 2162688,
+      "triangles": 6300,
+      "originalTriangles": 30610,
+      "textures": {
+        "count": 3,
+        "resolution": "1K（baseColor 保留 alpha 通道，未压缩）",
+        "channels": [
+          "baseColor(jpg)",
+          "normal(jpg)",
+          "arm(jpg)"
+        ]
+      },
+      "optimization": [
+        "gltf-transform 4：weld + simplify(ratio 0.2) 把 30,610 面降到 6,300 面",
+        "dedup + prune；baseColor 带 alpha（灯罩玻璃）保持原格式，未压成 JPEG",
+        "重打包为单文件 GLB"
+      ],
+      "usage": "前场与庭院路灯；实例化渲染，几何与材质全城共享",
+      "honestNote": "灯头**不带光源**：本轮不新增 PointLight，夜间亮度仍由既有 EnvironmentRig 决定。"
+    },
+    {
+      "id": "asphalt_02",
+      "kind": "texture",
+      "page": "https://polyhaven.com/a/asphalt_02",
+      "name": "Asphalt 02",
+      "author": "Poly Haven",
+      "license": "CC0-1.0",
+      "downloadUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/asphalt_02/asphalt_02_diff_1k.jpg",
+      "downloadedFormat": "JPEG 1K（diffuse / nor_gl / arm）",
+      "localPath": [
+        "public/assets/city-realism/textures/asphalt-diffuse-1k.jpg",
+        "public/assets/city-realism/textures/asphalt-normal-1k.jpg",
+        "public/assets/city-realism/textures/asphalt-arm-1k.jpg"
+      ],
+      "bytes": 2268599,
+      "originalBytes": 2268599,
+      "textures": {
+        "count": 3,
+        "resolution": "1024x1024",
+        "channels": [
+          "diffuse(jpg)",
+          "normal GL(jpg)",
+          "ARM(jpg)"
+        ]
+      },
+      "optimization": [
+        "直接使用 1K 原图，未重采样",
+        "ARM 同时驱动 roughness(G) 与 metalness(B)"
+      ],
+      "tileMeters": 4,
+      "usage": "全部车行道铺装（东西主路、南北主路、新区条带道路）"
+    },
+    {
+      "id": "concrete_pavement_02",
+      "kind": "texture",
+      "page": "https://polyhaven.com/a/concrete_pavement_02",
+      "name": "Concrete Pavement 02",
+      "author": "Poly Haven",
+      "license": "CC0-1.0",
+      "downloadUrl": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_pavement_02/concrete_pavement_02_diff_1k.jpg",
+      "downloadedFormat": "JPEG 1K（diffuse / nor_gl / arm）",
+      "localPath": [
+        "public/assets/city-realism/textures/paving-diffuse-1k.jpg",
+        "public/assets/city-realism/textures/paving-normal-1k.jpg",
+        "public/assets/city-realism/textures/paving-arm-1k.jpg"
+      ],
+      "bytes": 2878932,
+      "originalBytes": 2878932,
+      "textures": {
+        "count": 3,
+        "resolution": "1024x1024",
+        "channels": [
+          "diffuse(jpg)",
+          "normal GL(jpg)",
+          "ARM(jpg)"
+        ]
+      },
+      "optimization": [
+        "直接使用 1K 原图，未重采样",
+        "ARM 同时驱动 roughness(G) 与 metalness(B)"
+      ],
+      "tileMeters": 2.4,
+      "usage": "人行道、东岗街坊前场/小巷/庭院铺装"
     }
   ],
   "totals": {
-    "files": 8,
-    "bytes": 6806323,
-    "mebibytes": 6.49,
-    "composition": "2 个 GLB 模型 + 6 张 1K JPEG 贴图",
-    "diskNote": "生产静态资源合计 6.49 MiB（预算 15 MiB；未计入本清单自身约 9 KB）"
+    "stages": "阶段 1 新增 4 项（2 模型 + 2 贴图组，共 8 个文件）；加上既有 4 项，合计 12 项 / 16 个文件",
+    "addedBytes": 6457023,
+    "addedMebibytes": 6.16,
+    "previousMebibytes": 6.49,
+    "allMebibytes": 12.65,
+    "diskNote": "全城推广阶段对树木（18,003→12,660 面）与路灯（30,610→6,300 面）各减面一次，阶段 1 新增降到约 6.16 MiB，累计约 12.65 MiB。"
   }
 }

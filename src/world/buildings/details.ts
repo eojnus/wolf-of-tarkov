@@ -240,10 +240,11 @@ export function buildEntrance(context: DetailContext): void {
     [0, entrance.canopyHeight, frontZ + entrance.canopyDepth / 2],
     accentTileMeters,
   );
+  // 灯槽：比雨棚窄一圈、薄一点，读作一条灯带而不是一块发光板
   assembly.box(
     materials.lamp,
-    [canopyWidth - 0.6, 0.05, Math.max(0.4, entrance.canopyDepth - 0.5)],
-    [0, entrance.canopyHeight - 0.18, frontZ + entrance.canopyDepth / 2],
+    [Math.max(1.2, canopyWidth - 1.8), 0.03, Math.max(0.35, entrance.canopyDepth - 0.9)],
+    [0, entrance.canopyHeight - 0.17, frontZ + entrance.canopyDepth / 2],
     tileMeters,
   );
 

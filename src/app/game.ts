@@ -1207,6 +1207,8 @@ export class Game {
     // 读档顺序固定：先恢复逻辑地图并同步该地图的建筑实例，再恢复原始存档 pose；
     // 世界内部等到最终碰撞就绪后才会「仅在原位置非法时」做一次最小推出。
     this.syncedLayoutRevision = -1;
+    // 换了一份进度：先开新的显示会话（清掉上一份的装饰抑制），再同步布局与恢复位置
+    this.world.beginDisplaySession();
     this.syncWorldLayout();
     this.world.restore(worldData);
     this.collisionReady = this.world.isCollisionReady();
@@ -1255,6 +1257,8 @@ export class Game {
     this.panels.resetGovernmentSession();
     this.panels.resetShopSession();
     this.syncedLayoutRevision = -1;
+    // 新游戏同样是一次新的显示会话
+    this.world.beginDisplaySession();
     this.syncWorldLayout();
     this.world.resetToSpawn();
     this.collisionReady = this.world.isCollisionReady();

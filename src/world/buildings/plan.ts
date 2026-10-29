@@ -85,6 +85,8 @@ export interface ResolvedPlan {
     readonly glassInset: number;
     readonly frameWidth: number;
     readonly bandedFloors: boolean;
+    readonly cornice?: boolean;
+    readonly fins?: number;
   };
   readonly faces: {
     readonly front: FacePlan;
@@ -356,6 +358,8 @@ export function resolveBuildingPlan(input: PlanInput): ResolvedPlan {
     glassInset: clamp(style.facade.glassInset, 0.06, 0.3),
     frameWidth: clamp(style.facade.frameWidth, 0.04, 0.16),
     bandedFloors: style.facade.bandedFloors,
+    cornice: style.facade.cornice,
+    fins: style.facade.fins,
   };
 
   // 6) 阳台：深度不得超出前立面预留，开间按实际开间数派生

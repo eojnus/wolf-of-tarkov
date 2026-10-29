@@ -210,3 +210,39 @@ geometry/material/texture，不触碰城市共享资产。
 3. 人物模型仍在 `config.ts` 的 `PLAYER.model.url`，替换后需更新 `scene-scale` 里的人物身高参照说明。
 4. 新资源必须登记来源、作者、许可证与署名要求；无清晰许可的素材不得入库。
 4. 若新资源许可要求署名，请补充到本文件与游戏内的说明处。
+
+---
+
+---
+
+## 阶段 1（v0.3.x · city-block-realism）新增街景资源
+
+全部来自 **Poly Haven**，许可证 **CC0 1.0**（可商用、可修改、可再分发，署名非强制，仍在此致谢）。
+逐件登记见 `city-realism/manifest.json` 的 `street_tree_quiver_tree_01` / `street_lamp_01` /
+`asphalt_02` / `concrete_pavement_02` 四项。合计新增 **6.84 MiB**（8 个文件）。
+
+| 资源 | 来源页 | 作者 | 本地文件 | 处理 |
+| --- | --- | --- | --- | --- |
+| Quiver Tree 01 | https://polyhaven.com/a/quiver_tree_01 | Poly Haven | `models/street-tree.glb`（0.70 MiB，12,660 面） | gltf-transform：weld + simplify(0.05) 从 150,124 面降到 12,660 面；叶片材质 BLEND→OPAQUE；贴图 1K→512 JPEG；单文件 GLB |
+| Street Lamp 01 | https://polyhaven.com/a/street_lamp_01 | Poly Haven | `models/street-lamp.glb`（0.55 MiB，6,300 面） | gltf-transform：simplify(0.2) 从 30,610 面降到 6,300 面；灯罩 alpha 贴图保持 PNG；单文件 GLB |
+| Asphalt 02 | https://polyhaven.com/a/asphalt_02 | Poly Haven | `textures/asphalt-{diffuse,normal,arm}-1k.jpg`（2.16 MiB） | 1K 原图未重采样；ARM 驱动 roughness/metalness |
+| Concrete Pavement 02 | https://polyhaven.com/a/concrete_pavement_02 | Poly Haven | `textures/paving-{diffuse,normal,arm}-1k.jpg`（2.75 MiB） | 同上 |
+
+**如实说明**：
+
+1. 行道树是**箭袋树**（Quiver Tree，沙漠肉质乔木）：归一化到 5.6 m 后**树冠仅 2.44 × 2.00 m**，
+   冠形直立偏窄，**不是**阔叶行道树。
+   早前用的是冷杉幼树（Fir Sapling），5.6 m 高时冠幅达 **11.8 m**（高度的 2.1 倍），
+   必然穿插立面、相邻树冠与巷口视线，故在"仅修复试点树木"的授权范围内换用本资产。
+   首选的蓝花楹（`jacaranda_tree`，198 MB）、`tree_small_02`（90 MB，4.65 M 面）在本机
+   70 KB/s 的下载条件下不可行，因此选择体积与许可都可控的窄冠树。
+2. 叶片材质原本声明 BLEND，但六张贴图全是 JPEG、不带 alpha —— 混合没有收益，
+   改为 OPAQUE 后既省透明排序，也能正常投下阴影。
+3. 路灯**不带光源**：本阶段不新增 PointLight，夜间亮度仍由既有 `EnvironmentRig` 决定；
+   灯头保留原生材质，不额外自发光。
+4. 长椅是**程序化几何**（座板 + 两侧支墩），材质复用街景库的素色材质，**不计入外部美术资源**。
+   Poly Haven 的 `modular_street_seating` 是零件陈列布局（座板/腿/扶手分散在 x −2.3…+1.0），
+   取单一节点只是平板，逐件拼装又不值得，故未采用。
+5. 路缘石条、车道虚线、斑马线、围墙、绿篱都是**程序化几何 + 素色材质**，不属于外部资源。
+6. 全城推广时对树木与路灯各减面一次（树木 18,003→12,660，路灯 30,610→6,300），
+   累计静态资源约 **12.65 MiB**（既有 6.49 + 新增 6.16），仍在 15 MiB 预算之内。
