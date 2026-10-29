@@ -16,8 +16,7 @@
 结论：**第 1–4 节是历史测量记录，仍然真实，但不再描述当前渲染与碰撞行为**；
 `content/scene-scale.ts` 保留为只读参照数据，正式场景不再引用它。
 人物 1.78 米的身高约定与“建筑以米制真实尺寸建模”这一条仍然有效。
-当前模块化的尺寸/包络口径见 `docs/architecture.md` 第 16 节与
-`docs/city-building-integration-report.md`。
+当前模块化的尺寸/包络口径见 `docs/architecture.md` 第 16 节；历史报告可从 Git 查看，见 `docs/history.md`。
 
 ## 1. 测量口径与换算规则
 

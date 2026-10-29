@@ -853,4 +853,4 @@ AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − �
 
 `SceneryAssetLibrary` 持有共享街景贴图、材质和模型；街区只释放自己的合并几何、实例缓冲与工厂楼体。读档/新游戏在布局同步前调用 beginDisplaySession 清理装饰抑制并使布局指纹失效。既有室内与 UI 集成仍保留。
 
-快速验收范围、未验证项及模型风险见 `city-block-realism-integration.md`。不改变 SAVE.formatVersion 或经济扩张条件。
+历史快速验收的未验证项及模型风险见 `history.md`。不改变 SAVE.formatVersion 或经济扩张条件。
