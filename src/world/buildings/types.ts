@@ -54,6 +54,13 @@ export interface BuildingVisualRequest {
    * 其他设施不传即可。文字只用于表现，不参与任何业务判断。
    */
   readonly signLabel?: string;
+  /**
+   * 闭窗面（**按局部朝向**：front = +Z、back = −Z、right = +X、left = −X）。
+   *
+   * 命中的面不生成任何开洞构件，而是由 `buildSolidWall` 直接生成一整片实墙；
+   * 开间数仍按真实值计算（层间线脚的分格要用它），**不会被置 0**。
+   */
+  readonly blindFaces?: readonly ('front' | 'back' | 'right' | 'left')[];
 }
 
 /** 一栋建成的视觉对象。 */

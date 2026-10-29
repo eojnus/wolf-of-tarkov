@@ -15,7 +15,7 @@
  */
 
 import * as THREE from 'three';
-import { CAMERA } from '../content/config';
+import { CAMERA, CITY } from '../content/config';
 import type {
   CityLayoutView,
   LayoutBounds,
@@ -28,6 +28,9 @@ import {
   entranceAxis,
   entranceRotationY,
 } from './buildings';
+import { BuildingAssembly } from './buildings/geometry';
+import { disposeBlockGroup } from './blocks/scene';
+import type { SceneryAssetLibrary } from './scenery/assets';
 
 /**
  * 建筑碰撞盒（世界坐标 AABB）。
@@ -95,11 +98,25 @@ const PALETTE = {
   leaf: 0x5f7f52,
 };
 
-const CROSS_ROAD_Z = 0;
-
 export function disposeObject(root: THREE.Object3D): void {
   root.traverse((child) => {
     const mesh = child as THREE.Mesh;
+    /**
+     * 街景分支：材质与贴图归 `SceneryAssetLibrary` 所有，这里**一律不释放**。
+     *
+     * `userData.scenery` 取两个值，必须分开处理：
+     *  - `'shared-geometry'`：几何来自资产库（树木/家具/装饰楼体），只释放实例缓冲；
+     *  - `'owned-geometry'`：几何由本块/本路网合并生成，几何可以释放。
+     */
+    const scenery = mesh.userData?.scenery as 'shared-geometry' | 'owned-geometry' | undefined;
+    if (scenery) {
+      if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
+        (mesh as THREE.InstancedMesh).dispose();
+      } else if (scenery === 'owned-geometry') {
+        mesh.geometry?.dispose();
+      }
+      return;
+    }
     if (mesh.geometry) mesh.geometry.dispose();
     const material = (child as THREE.Mesh).material;
     if (Array.isArray(material)) {
@@ -746,115 +763,291 @@ export function releaseBuildingHandle(handle: BuildingHandle, factory: BuildingV
 
 /* ------------------------------------------------------------------ 道路 */
 
-/** 道路视觉指纹：几何不变时保留实例。 */
-function roadVisualKey(road: LayoutRoad): string {
-  return [
-    road.center.x,
-    road.center.z,
-    road.size.width,
-    road.size.depth,
-    road.width,
-  ].join('|');
+/**
+ * 车行道矩形（世界坐标）。
+ *
+ * 路面、人行道、路缘与标线全部由**矩形求交**推导，不再假设路口固定在某个 z。
+ * 旧实现用 `CROSS_ROAD_Z = 0` 断虚线，新区条带的路口位置不同就会画错。
+ */
+interface RoadRect {
+  readonly id: string;
+  readonly rect: { x0: number; x1: number; z0: number; z1: number };
+  readonly horizontal: boolean;
+}
+
+/** 路口：两条方向不同的车行道矩形之交，同时记住产生它的两条路。 */
+interface Junction {
+  readonly rect: { x0: number; x1: number; z0: number; z1: number };
+  readonly horizontalRoad: RoadRect;
+  readonly verticalRoad: RoadRect;
+}
+
+function roadRectOf(road: LayoutRoad): RoadRect {
+  return {
+    id: road.id,
+    rect: {
+      x0: road.center.x - road.size.width / 2,
+      x1: road.center.x + road.size.width / 2,
+      z0: road.center.z - road.size.depth / 2,
+      z1: road.center.z + road.size.depth / 2,
+    },
+    horizontal: road.size.width >= road.size.depth,
+  };
+}
+
+function junctionsOf(roads: readonly RoadRect[]): Junction[] {
+  const result: Junction[] = [];
+  for (let i = 0; i < roads.length; i += 1) {
+    for (let j = i + 1; j < roads.length; j += 1) {
+      if (roads[i].horizontal === roads[j].horizontal) continue;
+      const x0 = Math.max(roads[i].rect.x0, roads[j].rect.x0);
+      const x1 = Math.min(roads[i].rect.x1, roads[j].rect.x1);
+      const z0 = Math.max(roads[i].rect.z0, roads[j].rect.z0);
+      const z1 = Math.min(roads[i].rect.z1, roads[j].rect.z1);
+      if (x1 - x0 > 0.1 && z1 - z0 > 0.1) {
+        const horizontalRoad = roads[i].horizontal ? roads[i] : roads[j];
+        const verticalRoad = roads[i].horizontal ? roads[j] : roads[i];
+        result.push({ rect: { x0, x1, z0, z1 }, horizontalRoad, verticalRoad });
+      }
+    }
+  }
+  return result;
+}
+
+type FlatRect = { x0: number; x1: number; z0: number; z1: number };
+
+function overlapsRect(a: FlatRect, b: FlatRect): boolean {
+  return Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) > 1e-6 && Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0) > 1e-6;
 }
 
 /**
- * 按逻辑道路矩形生成路面、人行道与车道虚线。
+ * 轴对齐矩形相减：`base` 减去 `cut`，结果最多四块。
  *
- * 横向道路（宽 > 深）与纵向道路的铺装方式不同；人行道外扩按城区外边界裁剪，
- * 避免新区条带尽头出现悬空铺装。道路本身不参与碰撞。
+ * 用途一：路口处裁掉覆盖其他车行道的**人行道**（否则人行道会横铺在另一条路上）；
+ * 用途二：让车行道按优先级让出重叠区，**每个点只有一张路面**，
+ * 消除交叉区域的共面重复铺装（z-fighting 与无谓的 overdraw）。
  */
-function buildRoad(road: LayoutRoad, bounds: LayoutBounds): THREE.Group {
+function subtractRect(base: FlatRect, cut: FlatRect): FlatRect[] {
+  if (!overlapsRect(base, cut)) return [base];
+  const pieces: FlatRect[] = [];
+  if (cut.z0 > base.z0) pieces.push({ x0: base.x0, x1: base.x1, z0: base.z0, z1: cut.z0 });
+  if (cut.z1 < base.z1) pieces.push({ x0: base.x0, x1: base.x1, z0: cut.z1, z1: base.z1 });
+  const z0 = Math.max(base.z0, cut.z0);
+  const z1 = Math.min(base.z1, cut.z1);
+  if (cut.x0 > base.x0) pieces.push({ x0: base.x0, x1: cut.x0, z0, z1 });
+  if (cut.x1 < base.x1) pieces.push({ x0: cut.x1, x1: base.x1, z0, z1 });
+  return pieces.filter((item) => item.x1 - item.x0 > 1e-3 && item.z1 - item.z0 > 1e-3);
+}
+
+function subtractAll(base: FlatRect, cuts: readonly FlatRect[]): FlatRect[] {
+  let pieces: FlatRect[] = [base];
+  for (const cut of cuts) pieces = pieces.flatMap((piece) => subtractRect(piece, cut));
+  return pieces;
+}
+
+function insideJunction(junctions: readonly Junction[], x: number, z: number, pad: number): boolean {
+  return junctions.some(
+    (item) => x > item.rect.x0 - pad && x < item.rect.x1 + pad && z > item.rect.z0 - pad && z < item.rect.z1 + pad,
+  );
+}
+
+/**
+ * 道路网络指纹：道路集合或边界变化才重建。
+ *
+ * 道路是"整网一次成型"的对象（路口要一起算），因此不做逐条增量；
+ * 它只在城区完工、道路集合真正变化时重建，代价是几条合并网格。
+ */
+function roadNetworkKey(roads: readonly LayoutRoad[], bounds: LayoutBounds): string {
+  const body = roads
+    .map((road) => [road.id, road.center.x, road.center.z, road.size.width, road.size.depth].join(','))
+    .join('|');
+  return `${body}#${bounds.minX},${bounds.maxX},${bounds.minZ},${bounds.maxZ}`;
+}
+
+interface RoadBuild {
+  readonly group: THREE.Group;
+  /** 需要异步换成真实 PBR 的合并网格（先用素色占位，避免首帧卡在纹理加载）。 */
+  readonly swaps: { readonly mesh: THREE.Mesh; readonly key: 'asphalt' | 'paving' }[];
+  readonly triangles: number;
+}
+
+/**
+ * 生成整个路网：车行道、人行道、路缘石条、车行道虚线、斑马线与停止线。
+ *
+ * 约定：
+ *  - 所有面都在 `y ≈ 0`（顶面 10–16 mm），人物不做垂直采样，路缘只是**颜色分界**；
+ *  - 人行道只向道路两侧外扩，**不沿道路末端延伸**（旧实现 `depth + 4` 会压住便利店）；
+ *  - 标线按真实路口断开，路缘在路口与斑马线处断开（落平路缘）。
+ */
+function buildRoadNetwork(
+  roads: readonly LayoutRoad[],
+  library: { getSolidMaterial(key: 'curb' | 'marking' | 'wall' | 'hedge' | 'soil'): THREE.Material },
+): RoadBuild {
   const group = new THREE.Group();
-  const roadMaterial = new THREE.MeshStandardMaterial({ color: PALETTE.road, roughness: 0.95 });
-  const walkMaterial = new THREE.MeshStandardMaterial({ color: PALETTE.sidewalk, roughness: 0.95 });
-  const lineMaterial = new THREE.MeshStandardMaterial({ color: 0xe9edd8, roughness: 0.8 });
+  group.name = 'roads';
+  const surfaces = roads.map(roadRectOf);
+  const junctions = junctionsOf(surfaces);
+  const swaps: { mesh: THREE.Mesh; key: 'asphalt' | 'paving' }[] = [];
+  let triangles = 0;
 
-  const boundsDepth = bounds.maxZ - bounds.minZ;
-  const horizontal = road.size.width >= road.size.depth;
+  const curbMaterial = library.getSolidMaterial('curb');
+  const markingMaterial = library.getSolidMaterial('marking');
+  const placeholder = library.getSolidMaterial('soil');
+  const top = CITY.surfaceTop;
 
-  if (horizontal) {
-    const walkDepth = Math.min(road.size.depth + 4.4, boundsDepth);
-    const walk = new THREE.Mesh(
-      new THREE.BoxGeometry(road.size.width, 0.08, walkDepth),
-      walkMaterial,
-    );
-    walk.position.set(road.center.x, 0.05, road.center.z);
-    const surface = new THREE.Mesh(
-      new THREE.BoxGeometry(road.size.width, 0.1, road.size.depth),
-      roadMaterial,
-    );
-    surface.position.set(road.center.x, 0.08, road.center.z);
-    group.add(walk, surface);
+  const push = (assembly: BuildingAssembly, material: THREE.Material, size: readonly [number, number, number], center: readonly [number, number, number], tile: number): void => {
+    assembly.box(material, size, center, tile);
+  };
 
-    // 中央虚线：沿 x 铺；在纵向道路路口处断开
-    const half = road.size.width / 2;
-    for (let x = road.center.x - half + 3; x < road.center.x + half - 1; x += 6) {
-      if (Math.abs(x - road.center.x) < road.size.depth / 2 + 1) continue;
-      const dash = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.02, 0.28), lineMaterial);
-      dash.position.set(x, 0.14, road.center.z);
-      group.add(dash);
+  // ---- 车行道
+  // 每条路让出**已在前面铺过的**路口区域：交叉处只有一张路面，
+  // 既不会有共面重复（z-fighting），也不会对同一块像素重复着色。
+  const roadAssembly = new BuildingAssembly();
+  surfaces.forEach((item, index) => {
+    const taken = surfaces.slice(0, index).map((other) => other.rect);
+    for (const piece of subtractAll(item.rect, taken)) {
+      push(
+        roadAssembly,
+        placeholder,
+        [piece.x1 - piece.x0, 0.06, piece.z1 - piece.z0],
+        [(piece.x0 + piece.x1) / 2, top.road - 0.03, (piece.z0 + piece.z1) / 2],
+        4,
+      );
     }
-  } else {
-    const walkWidth = road.size.width + 4.4;
-    const walkDepth = Math.min(road.size.depth + 4, boundsDepth);
-    const walk = new THREE.Mesh(
-      new THREE.BoxGeometry(walkWidth, 0.08, walkDepth),
-      walkMaterial,
-    );
-    walk.position.set(road.center.x, 0.06, road.center.z);
-    const surface = new THREE.Mesh(
-      new THREE.BoxGeometry(road.size.width, 0.1, road.size.depth),
-      roadMaterial,
-    );
-    surface.position.set(road.center.x, 0.08, road.center.z);
-    group.add(walk, surface);
-
-    // 中央虚线：沿 z 铺；与东西主路（所有模板都在 z = 0）交叉处断开
-    const half = road.size.depth / 2;
-    for (let z = road.center.z - half + 3; z < road.center.z + half - 1; z += 6) {
-      if (Math.abs(z - CROSS_ROAD_Z) < road.width / 2 + 1) continue;
-      const dash = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.02, 2.6), lineMaterial);
-      dash.position.set(road.center.x, 0.14, z);
-      group.add(dash);
-    }
-  }
-
-  // 路面是贴地薄板：只接收阴影，参与投影只会与地面互相打架（自身阴影痤疮）
-  group.traverse((child) => {
-    const mesh = child as THREE.Mesh;
-    if (mesh.isMesh) mesh.receiveShadow = true;
   });
-  return group;
+  triangles += (roadAssembly as unknown as { stats(): { triangles: number } }).stats().triangles;
+
+  // ---- 人行道（只向两侧外扩，不沿末端延伸；路口处被其他车行道切开）
+  const walkAssembly = new BuildingAssembly();
+  const sw = CITY.sidewalkWidth;
+  surfaces.forEach((item, index) => {
+    // 其他人行道的车行道：任何一条横穿过去，都必须把人行道在这里断开
+    const others = surfaces.filter((_, i) => i !== index).map((other) => other.rect);
+    const bands: FlatRect[] = item.horizontal
+      ? [
+          { x0: item.rect.x0, x1: item.rect.x1, z0: item.rect.z0 - sw, z1: item.rect.z0 },
+          { x0: item.rect.x0, x1: item.rect.x1, z0: item.rect.z1, z1: item.rect.z1 + sw },
+        ]
+      : [
+          { x0: item.rect.x0 - sw, x1: item.rect.x0, z0: item.rect.z0, z1: item.rect.z1 },
+          { x0: item.rect.x1, x1: item.rect.x1 + sw, z0: item.rect.z0, z1: item.rect.z1 },
+        ];
+    for (const band of bands) {
+      for (const piece of subtractAll(band, others)) {
+        push(
+          walkAssembly,
+          placeholder,
+          [piece.x1 - piece.x0, 0.06, piece.z1 - piece.z0],
+          [(piece.x0 + piece.x1) / 2, top.paving - 0.03, (piece.z0 + piece.z1) / 2],
+          2.4,
+        );
+      }
+    }
+  });
+
+  // ---- 路缘石条 + 标线（共享实色材质，不需要换贴图）
+  const solidAssembly = new BuildingAssembly();
+  const markingAssembly = new BuildingAssembly();
+  const curbW = CITY.curbStripWidth;
+
+  // 路缘：沿每条道路的两条长边，铺在人行道靠近车行道的一侧；路口与斑马线处断开
+  for (const item of surfaces) {
+    if (item.horizontal) {
+      for (const z of [item.rect.z0, item.rect.z1]) {
+        const sign = z === item.rect.z0 ? -1 : 1;
+        let x = item.rect.x0;
+        while (x < item.rect.x1 - 0.2) {
+          const len = Math.min(4, item.rect.x1 - x);
+          const midX = x + len / 2;
+          if (!insideJunction(junctions, midX, z, 4.5)) {
+            push(solidAssembly, curbMaterial, [len, 0.04, curbW], [midX, top.paving - 0.018, z + (sign * curbW) / 2], 1);
+          }
+          x += len;
+        }
+      }
+    } else {
+      for (const x of [item.rect.x0, item.rect.x1]) {
+        const sign = x === item.rect.x0 ? -1 : 1;
+        let z = item.rect.z0;
+        while (z < item.rect.z1 - 0.2) {
+          const len = Math.min(4, item.rect.z1 - z);
+          const midZ = z + len / 2;
+          if (!insideJunction(junctions, x, midZ, 4.5)) {
+            push(solidAssembly, curbMaterial, [curbW, 0.04, len], [x + (sign * curbW) / 2, top.paving - 0.018, midZ], 1);
+          }
+          z += len;
+        }
+      }
+    }
+  }
+
+  // 车行道中心虚线：沿道路长轴，路口前后各留 1 m 断开
+  for (const item of surfaces) {
+    const span = item.horizontal ? item.rect.x1 - item.rect.x0 : item.rect.z1 - item.rect.z0;
+    const steps = Math.max(1, Math.floor(span / 6));
+    for (let i = 0; i < steps; i += 1) {
+      const offset = (span / steps) * (i + 0.5);
+      const x = item.horizontal ? item.rect.x0 + offset : (item.rect.x0 + item.rect.x1) / 2;
+      const z = item.horizontal ? (item.rect.z0 + item.rect.z1) / 2 : item.rect.z0 + offset;
+      if (insideJunction(junctions, x, z, 1.2)) continue;
+      push(
+        markingAssembly,
+        markingMaterial,
+        item.horizontal ? [2.6, 0.02, 0.16] : [0.16, 0.02, 2.6],
+        [x, top.marking, z],
+        1,
+      );
+    }
+  }
+
+  // 斑马线：每个路口四条边各一组。
+  // 条带必须落在**本路口参与的**那条路上，不能用"第一条横/纵向道路"顶替。
+  for (const junction of junctions) {
+    const armPad = 0.6;
+    const crossingWidth = 3.6;
+    const barWidth = 0.45;
+    const h = junction.horizontalRoad.rect;
+    const v = junction.verticalRoad.rect;
+    for (const side of ['west', 'east'] as const) {
+      const x = side === 'west' ? junction.rect.x0 - armPad - crossingWidth / 2 : junction.rect.x1 + armPad + crossingWidth / 2;
+      let z = h.z0 + 0.4;
+      while (z < h.z1 - 0.4) {
+        push(markingAssembly, markingMaterial, [crossingWidth, 0.02, barWidth], [x, top.marking, z + barWidth / 2], 1);
+        z += barWidth * 2;
+      }
+    }
+    for (const side of ['south', 'north'] as const) {
+      const z = side === 'south' ? junction.rect.z0 - armPad - crossingWidth / 2 : junction.rect.z1 + armPad + crossingWidth / 2;
+      let x = v.x0 + 0.4;
+      while (x < v.x1 - 0.4) {
+        push(markingAssembly, markingMaterial, [barWidth, 0.02, crossingWidth], [x + barWidth / 2, top.marking, z], 1);
+        x += barWidth * 2;
+      }
+    }
+  }
+
+  // 合并成网格：每个材质一个 draw call
+  const place = (assembly: BuildingAssembly, surfaceKey?: 'asphalt' | 'paving'): void => {
+    const built = assembly.build();
+    for (const child of built.children) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) continue;
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      // 路面/人行道的几何由本组拥有，材质由街景库共享
+      mesh.userData.scenery = 'owned-geometry';
+      group.add(mesh);
+      if (surfaceKey) swaps.push({ mesh, key: surfaceKey });
+    }
+  };
+  place(roadAssembly, 'asphalt');
+  place(walkAssembly, 'paving');
+  place(solidAssembly);
+  place(markingAssembly);
+
+  return { group, swaps, triangles };
 }
 
-function buildTrees(): THREE.Group {
-  const group = new THREE.Group();
-  const trunkMaterial = new THREE.MeshStandardMaterial({ color: PALETTE.trunk, roughness: 1 });
-  const leafMaterial = new THREE.MeshStandardMaterial({ color: PALETTE.leaf, roughness: 1 });
-  const positions: Array<[number, number]> = [
-    [-9, -30],
-    [9, -30],
-    [-9, -8],
-    [9, -8],
-    [-9, 10],
-    [9, 10],
-    [-9, 30],
-    [9, 30],
-    [-34, 6],
-    [-34, -14],
-    [34, 6],
-    [34, -14],
-  ];
-  for (const [x, z] of positions) {
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 2.4, 6), trunkMaterial);
-    trunk.position.set(x, 1.2, z);
-    const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(1.5, 0), leafMaterial);
-    crown.position.set(x, 3.4, z);
-    group.add(trunk, crown);
-  }
-  applySolidShadowFlags(group);
-  return group;
-}
 
 /* ------------------------------------------------------------------ 场景 */
 
@@ -888,34 +1081,32 @@ function buildingLabelKey(building: LayoutBuilding): string {
   return [building.name, building.subtitle, building.available ? 1 : 0].join('|');
 }
 
-interface RoadHandle {
-  readonly group: THREE.Group;
-  readonly key: string;
-}
-
 class CitySceneImpl implements CityScene {
   readonly scene = new THREE.Scene();
   private readonly ground: THREE.Mesh;
   private readonly buildingsGroup = new THREE.Group();
-  private readonly roadsGroup = new THREE.Group();
   private readonly buildingHandles = new Map<
     string,
     { readonly handle: BuildingHandle; readonly key: string; labelKey: string }
   >();
-  private readonly roadHandles = new Map<string, RoadHandle>();
+  /** 路网整网一次成型（路口要一起算），按指纹整体重建。 */
+  private roadGroup: THREE.Group | null = null;
+  private roadKey = '';
+  private readonly library: SceneryAssetLibrary;
   private currentBuildings: BuildingHandle[] = [];
   /** 工厂由 World 持有；scene 只负责单栋释放，不销毁共享资产库。 */
   private readonly factory: BuildingVisualFactory;
   private fogBaseValue: { near: number; far: number } = { near: 70, far: 165 };
 
-  constructor(factory: BuildingVisualFactory) {
+  constructor(factory: BuildingVisualFactory, library: SceneryAssetLibrary) {
     this.factory = factory;
+    this.library = library;
     // 太阳、天空与雾由 EnvironmentRig 唯一管理，场景只维护几何与雾距离基数。
     const groundMaterial = new THREE.MeshStandardMaterial({ color: PALETTE.ground, roughness: 1 });
     // 单位盒按 bounds 缩放：城区扩张时只改缩放与位置，不重建地面几何体。
     this.ground = new THREE.Mesh(new THREE.BoxGeometry(1, 0.4, 1), groundMaterial);
     this.ground.receiveShadow = true;
-    this.scene.add(this.ground, this.buildingsGroup, this.roadsGroup, buildTrees());
+    this.scene.add(this.ground, this.buildingsGroup);
   }
 
   get buildings(): readonly BuildingHandle[] {
@@ -928,7 +1119,7 @@ class CitySceneImpl implements CityScene {
 
   syncLayout(layout: CityLayoutView): void {
     this.updateGround(layout.bounds);
-    this.syncRoads(layout.roads, layout.bounds);
+    this.syncRoadNetwork(layout.roads, layout.bounds);
     this.syncBuildings(layout.buildings);
   }
 
@@ -945,27 +1136,36 @@ class CitySceneImpl implements CityScene {
     this.fogBaseValue = { near: Math.min(70, fogFar * 0.45), far: fogFar };
   }
 
-  private syncRoads(roads: readonly LayoutRoad[], bounds: LayoutBounds): void {
-    const desired = new Set<string>();
-    for (const road of roads) desired.add(road.id);
-    for (const [id, handle] of this.roadHandles) {
-      if (desired.has(id)) continue;
-      this.roadsGroup.remove(handle.group);
-      disposeObject(handle.group);
-      this.roadHandles.delete(id);
+  /**
+   * 路网同步：指纹不变就跳过；变化时整网重建。
+   *
+   * 重建只释放本路网自己的合并几何（`disposeBlockGroup`），材质与贴图归街景库，
+   * 绝不再走 `disposeObject`（那会把共享沥青贴图从别处抽走）。
+   */
+  private syncRoadNetwork(roads: readonly LayoutRoad[], bounds: LayoutBounds): void {
+    const key = roadNetworkKey(roads, bounds);
+    if (this.roadGroup && this.roadKey === key) return;
+    if (this.roadGroup) {
+      this.roadGroup.removeFromParent();
+      disposeBlockGroup(this.roadGroup);
+      this.roadGroup = null;
     }
-    for (const road of roads) {
-      const key = roadVisualKey(road);
-      const existing = this.roadHandles.get(road.id);
-      if (existing && existing.key === key) continue;
-      if (existing) {
-        this.roadsGroup.remove(existing.group);
-        disposeObject(existing.group);
-        this.roadHandles.delete(road.id);
-      }
-      const group = buildRoad(road, bounds);
-      this.roadsGroup.add(group);
-      this.roadHandles.set(road.id, { group, key });
+    const built = buildRoadNetwork(roads, this.library);
+    this.roadGroup = built.group;
+    this.roadKey = key;
+    this.scene.add(built.group);
+    for (const item of built.swaps) {
+      const mesh = item.mesh;
+      const surface = item.key;
+      void this.library
+        .getSurfaceMaterial(surface)
+        .then((material) => {
+          if (!mesh.parent) return;
+          mesh.material = material;
+        })
+        .catch((error: unknown) => {
+          console.warn(`[scene] 路面材质加载失败，保留素色：${surface}`, error);
+        });
     }
   }
 
@@ -1019,8 +1219,13 @@ class CitySceneImpl implements CityScene {
       releaseBuildingHandle(entry.handle, this.factory);
     }
     this.buildingHandles.clear();
+    if (this.roadGroup) {
+      this.roadGroup.removeFromParent();
+      disposeBlockGroup(this.roadGroup);
+      this.roadGroup = null;
+      this.roadKey = '';
+    }
     disposeObject(this.scene);
-    this.roadHandles.clear();
     this.currentBuildings = [];
   }
 }
@@ -1031,8 +1236,12 @@ class CitySceneImpl implements CityScene {
  * 只创建布局里存在的实例；模块化楼体由 World 向工厂请求后经 `attachBuildingVisual` 挂载，
  * 本文件不发起任何异步加载。
  */
-export function buildCityScene(layout: CityLayoutView, factory: BuildingVisualFactory): CityScene {
-  const city = new CitySceneImpl(factory);
+export function buildCityScene(
+  layout: CityLayoutView,
+  factory: BuildingVisualFactory,
+  library: SceneryAssetLibrary,
+): CityScene {
+  const city = new CitySceneImpl(factory, library);
   city.syncLayout(layout);
   return city;
 }

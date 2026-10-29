@@ -25,7 +25,7 @@
  * v2：正式接入正式地图。支持 5 米真实低楼（高度下限 6 → 5）、单层建筑不再摆放屋顶设备、
  *     朝向 90° 时局部宽深交换（世界占地不变）、新增公共建筑与商业低楼两种风格。
  */
-export const BUILDING_VISUAL_RULES_VERSION = 2;
+export const BUILDING_VISUAL_RULES_VERSION = 3;
 
 export type BuildingStyleId =
   | 'residential-6'
@@ -101,6 +101,10 @@ export interface FacadeStyle {
   readonly frameWidth: number;
   /** 是否生成横贯全宽的层间线脚。 */
   readonly bandedFloors: boolean;
+  /** 顶部檐口（默认画）：压在女儿墙脚下的一道浅挑，给天际线收头。 */
+  readonly cornice?: boolean;
+  /** 竖向翼板宽度（米）：办公风格用，整高贯通，强化"办公楼"辨识。 */
+  readonly fins?: number;
 }
 
 /**
@@ -305,17 +309,18 @@ export const BUILDING_STYLES: Readonly<Record<BuildingStyleId, BuildingStyle>> =
   'office-10': {
     id: 'office-10',
     label: '商业办公楼',
-    notes: '商业裙房 + 连续窗带幕墙、通高门厅、背面低区外挂疏散楼梯。',
+    notes: '商业裙房 + 连续窗带幕墙 + 整高竖向翼板、通高门厅、背面低区外挂疏散楼梯。',
     floorHeights: { ground: 4.8, upper: 3.6 },
     facade: {
       preferredBayWidth: 4.0,
-      sillHeight: 0.35,
-      headHeight: 3.1,
-      pierWidth: 0.28,
+      sillHeight: 0.3,
+      headHeight: 3.15,
+      pierWidth: 0.22,
       wallThickness: 0.45,
       glassInset: 0.1,
       frameWidth: 0.07,
       bandedFloors: true,
+      fins: 0.18,
     },
     footprint: { frontInset: 2.8, backInset: 1.7, sideInset: 0.35 },
     balcony: {

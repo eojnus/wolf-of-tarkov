@@ -710,3 +710,11 @@ AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − �
 - 透明玻璃与 Sprite 标签不投影；招牌贴面显式标记 `userData.shadowCaster = false`，只接收阴影。
 - 标记属于内存渲染元数据，不进存档。环境层不读取房产或资金，建筑工厂不决定天气或创建光源。
 - World 销毁先失效并取消建筑请求，再释放人物与环境、场景楼体，最后释放工厂共享资产和 renderer。
+
+## 城市街区写实化（2026-10-29）
+
+`world/blocks` 从只读 cityLayout 派生装饰楼、步行域、庭院、景观及碰撞，不向经济地图或房地产写入；sites 枚举站点，generate 生成 clipped/row 或完整围合模板，templates 提供按 id+版本解析的 A/B/C 入口和端口。world 按块指纹同步并合并碰撞，业务建筑仍是交互唯一来源。
+
+`SceneryAssetLibrary` 持有共享街景贴图、材质和模型；街区只释放自己的合并几何、实例缓冲与工厂楼体。读档/新游戏在布局同步前调用 beginDisplaySession 清理装饰抑制并使布局指纹失效。既有室内与 UI 集成仍保留。
+
+快速验收范围、未验证项及模型风险见 `city-block-realism-integration.md`。不改变 SAVE.formatVersion 或经济扩张条件。

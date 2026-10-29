@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>街区模板预览 · 住宅庭院 / 商业混合 / 科技办公</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #0d1116;
+        color: #dfe3e8;
+        font: 12px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      #block-root {
+        position: fixed;
+        inset: 0;
+      }
+      #block-report {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        max-width: 520px;
+        padding: 10px 12px;
+        background: rgba(12, 16, 20, 0.82);
+        border: 1px solid #2a3038;
+        border-radius: 8px;
+        white-space: pre-wrap;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="block-root"></div>
+    <div id="block-report">loading…</div>
+    <script type="module" src="/src/dev/template-preview.ts"></script>
+  </body>
+</html>

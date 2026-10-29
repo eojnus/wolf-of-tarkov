@@ -120,5 +120,9 @@ export function visualFingerprint(request: BuildingVisualRequest): string {
     request.templateVersion,
     BUILDING_VISUAL_RULES_VERSION,
     request.signLabel ?? '',
+    // 闭窗面按固定顺序序列化，保证同一集合的指纹稳定
+    ['front', 'back', 'left', 'right']
+      .filter((face) => (request.blindFaces ?? []).includes(face as never))
+      .join('+'),
   ].join('|');
 }

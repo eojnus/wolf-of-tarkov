@@ -310,7 +310,8 @@ export class VisualAssetLibrary {
           roughness: 0.35,
           metalness: 0,
           emissive: new THREE.Color(0xffdca8),
-          emissiveIntensity: 0.9,
+          // 0.9 会让整条檐下灯带变成一块发光的金板；压到 0.35 才像灯槽
+          emissiveIntensity: 0.35,
         }),
       );
 

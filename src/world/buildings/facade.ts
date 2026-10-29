@@ -180,6 +180,14 @@ export interface ShellOptions {
   readonly materials: BuildingMaterials;
   readonly tileMeters: number;
   readonly accentTileMeters: number;
+  /** 闭窗面（局部朝向）。命中的面整片实墙，不开洞、不出橱窗。 */
+  readonly blindFaces?: readonly string[];
+}
+
+/** 立面 → 局部朝向名（与 `BuildingVisualRequest.blindFaces` 同一套字面）。 */
+function faceNameOf(face: Face): string {
+  if (face.axis === 'x') return face.sign === 1 ? 'front' : 'back';
+  return face.sign === 1 ? 'right' : 'left';
 }
 
 /**
@@ -190,6 +198,7 @@ export interface ShellOptions {
  */
 export function buildShell(options: ShellOptions): void {
   const { assembly, plan, materials, tileMeters, accentTileMeters } = options;
+  const blind = new Set(options.blindFaces ?? []);
   const facade = plan.facade;
   const t = facade.wallThickness;
   const faces = facesOf(plan);
@@ -206,6 +215,18 @@ export function buildShell(options: ShellOptions): void {
       // 地面层的窗洞比标准层高一点，但始终留出窗下墙与过梁
       const openBottom = ground ? Math.min(facade.sillHeight + 0.55, h * 0.35) : facade.sillHeight;
       const openTop = ground ? Math.min(facade.headHeight + 0.5, h - 0.5) : facade.headHeight;
+
+      /*
+       * 闭窗面：直接生成一整片实墙。
+       *
+       * 不能靠"把开间数设为 0"来实现 —— 那会让 `bayWidth = length / bays` 除以 0，
+       * 也不会生成任何墙面。这里走独立分支：一个整面盒子，跳过窗洞、窗间墙、
+       * 玻璃、框料、橱窗与入口；基座与层间线脚仍由外层逻辑生成（否则出现断带）。
+       */
+      if (blind.has(faceNameOf(face))) {
+        facePiece(assembly, face, materials.wall, tileMeters, 0, face.length, y0 + h / 2, h, t);
+        continue;
+      }
 
       if (ground && plan.entrance.shopfront) {
         buildShopfront(assembly, face, materials, tileMeters, accentTileMeters, plan, bayWidth, pier);
@@ -275,6 +296,45 @@ export function buildShell(options: ShellOptions): void {
       const y = y0 - bandHeight / 2;
       for (const face of faces) {
         facePiece(assembly, face, materials.trim, tileMeters, 0, face.length + 0.24, y, bandHeight, t + 0.16, -0.08);
+      }
+    }
+  }
+
+  /*
+   * 顶部檐口：压在女儿墙脚下的一道浅挑。
+   * 只有 0.3 m 高、外挑 0.1 m，落在声明包络内（女儿墙本身就从 wallTop 起算），
+   * 但它是"楼有没有收头"的关键——没有它，所有楼看起来都像被刀切平的盒子。
+   */
+  if (facade.cornice !== false) {
+    const corniceHeight = 0.3;
+    const y = plan.body.wallTop - corniceHeight / 2;
+    for (const face of faces) {
+      facePiece(assembly, face, materials.trim, tileMeters, 0, face.length + 0.3, y, corniceHeight, t + 0.2, -0.1);
+    }
+  }
+
+  /*
+   * 竖向翼板：办公风格专属。整高贯通、外挑 0.07 m，把连续窗带切成"柱距"，
+   * 远看就能和住宅/公寓区分开。闭窗面（共墙）不画，避免在实墙上贴装饰。
+   */
+  if (facade.fins && facade.fins > 0) {
+    const front = faces.find((face) => face.axis === 'x' && face.sign === 1);
+    if (front && !blind.has(faceNameOf(front))) {
+      const { bays, bayWidth } = front.plan;
+      for (let index = 1; index < bays; index += 1) {
+        const along = -front.length / 2 + index * bayWidth;
+        facePiece(
+          assembly,
+          front,
+          materials.trim,
+          tileMeters,
+          along,
+          facade.fins,
+          plan.body.wallTop / 2,
+          plan.body.wallTop,
+          t + 0.14,
+          -0.07,
+        );
       }
     }
   }

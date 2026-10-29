@@ -163,6 +163,22 @@ export interface BuildingConfig {
 export const CITY = {
   groundSize: 110,
   roadWidth: 12,
+  /**
+   * 人行道宽度（米）。
+   *
+   * 只向车行道**两侧**外扩，不沿道路末端延伸：旧实现按 `depth + 4` 同时外扩末端，
+   * 会把南北路的人行道压进便利店占地 2 m。
+   */
+  sidewalkWidth: 3,
+  /** 路缘石条宽度（米）：视觉分界，可行走面统一在 y = 0，不产生必须跨越的高差。 */
+  curbStripWidth: 0.4,
+  /**
+   * 铺装面顶标高（米）。三个值都远小于可感知尺度（≤ 16 mm），
+   * 人物不做垂直采样，因此不会陷入或悬空；分层只为让相邻铺装不共面。
+   */
+  surfaceTop: { road: 0.01, paving: 0.012, marking: 0.016 },
+  /** 行道树间距（米）：树位由沿街长度推导，不使用固定点表。 */
+  treeSpacing: 6,
   spawn: { x: 0, z: 6 },
   buildings: [
     {

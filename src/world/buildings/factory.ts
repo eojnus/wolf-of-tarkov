@@ -156,9 +156,13 @@ export class BuildingVisualFactory {
       pieces,
     };
 
-    buildShell(context);
-    buildBalconies(context, instances);
-    buildEntrance(context);
+    const blind = new Set(request.blindFaces ?? []);
+    buildShell({ ...context, blindFaces: request.blindFaces });
+    // 闭窗面不得同时是阳台面/入口面：共墙侧不开阳台、不设门斗
+    if (!blind.has('front')) {
+      buildBalconies(context, instances);
+      buildEntrance(context);
+    }
     buildRoof(context, instances);
     buildFireEscape(context, instances);
     // 门头招牌：底板并入合批，贴面是本楼独有材质（随本楼释放）
