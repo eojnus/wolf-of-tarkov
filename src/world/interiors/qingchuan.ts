@@ -21,6 +21,7 @@ import {
 } from '../../features/furniture';
 import type { PlayerBounds, PlayerPose } from '../player';
 import type { Collider } from '../scene';
+import { ceilingBox } from '../physics/collision';
 
 export interface InteriorRuntime {
   readonly scene: THREE.Scene;
@@ -30,6 +31,11 @@ export interface InteriorRuntime {
   readonly occluders: readonly Collider[];
   /** 固定壳体碰撞/遮挡；编辑会话的安全落点只把它们当永久障碍。 */
   readonly shellColliders: readonly Collider[];
+  /**
+   * 物理专用固定结构：壳体 + 天花板 + 门头（地板由物理运行时统一添加）。
+   * 与 `shellColliders` 分开，避免三维门头/天花板把旧二维安全落点搜索封死。
+   */
+  readonly structureColliders: readonly Collider[];
   readonly shellOccluders: readonly Collider[];
   /** 编辑态隐藏内墙后，射线遮挡应跳过这些固定盒。 */
   readonly editShellOccluders: readonly Collider[];
@@ -878,6 +884,39 @@ export async function loadQingchuanInterior(
   addLivingDetails(scene, collector);
   addLights(scene);
   addCeilingLight(scene, collector);
+  const { wall, width, depth, height } = INTERIOR.room;
+  const { entrance, bathroomDoor, partition } = INTERIOR.openings;
+  const structureColliders: Collider[] = [
+    ...shellColliders,
+    ceilingBox(width, depth, height),
+    // 入户门头：门洞本身保持通行，只有 2.1m 以上的实体封口。
+    {
+      minX: entrance.minX,
+      maxX: entrance.maxX,
+      minZ: -wall / 2,
+      maxZ: wall / 2,
+      minY: entrance.height,
+      maxY: height,
+    },
+    // 卫浴门头。
+    {
+      minX: 1.5 - wall / 2,
+      maxX: 1.5 + wall / 2,
+      minZ: bathroomDoor.minZ,
+      maxZ: bathroomDoor.maxZ,
+      minY: bathroomDoor.height,
+      maxY: height,
+    },
+    // 服务区隔断门头（门柱、短墙、门扇停靠位已在 shellColliders 中）。
+    {
+      minX: partition.minX - partition.post,
+      maxX: partition.maxX + partition.post,
+      minZ: 2.4 - wall / 2,
+      maxZ: 2.4 + wall / 2,
+      minY: partition.height,
+      maxY: height,
+    },
+  ];
   const editHiddenSet = new Set(editHiddenOccluders);
   const editShellOccluders = shellOccluders.filter(
     (collider) => !editHiddenSet.has(collider),
@@ -969,7 +1008,6 @@ export async function loadQingchuanInterior(
   };
   applyLayout(layout);
 
-  const { wall, width, depth } = INTERIOR.room;
   return {
     scene,
     get colliders() {
@@ -979,6 +1017,7 @@ export async function loadQingchuanInterior(
       return currentOccluders;
     },
     shellColliders,
+    structureColliders,
     shellOccluders,
     editShellOccluders,
     bounds: { minX: wall, maxX: width - wall, minZ: wall, maxZ: depth - wall },

@@ -1793,8 +1793,8 @@ export class PanelManager {
         <div class="kv-list">
           ${kv('人物界面', 'Tab')}
           ${kv('交互 / 关闭窗口', 'F')}
+          ${kv('跳跃', 'Space')}
           ${kv('暂停与返回', 'Esc')}
-          ${kv('暂停 / 继续', 'Space')}
         </div>
       </div>
       <div class="note" style="margin-top:8px">${esc(BRANDING.gameTitle)} · ${formatMoneyCompact(

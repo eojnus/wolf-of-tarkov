@@ -334,6 +334,39 @@ export const PLAYER = {
   },
 } as const;
 
+/**
+ * 人物物理与跳跃。
+ *
+ * 全部以真实时间推进，与经济游戏分钟、速度倍率无关；数值是首版待用户验收的手感，
+ * 不代表最终平衡。角色脚底就是刚体原点，胶囊中心由 `height / 2` 得到。
+ */
+export const PHYSICS = {
+  /** 固定物理步长；渲染帧只负责累积，不直接决定物理结果。 */
+  fixedStepSeconds: 1 / 60,
+  /** 单次更新最多采信的真实时间；超限部分直接丢弃，避免后台恢复时补算。 */
+  maxFrameDeltaSeconds: 0.1,
+  /** 每帧最多执行的物理子步；与上一项一起限制最坏情况。 */
+  maxSubSteps: 6,
+  gravity: -20,
+  jumpSpeed: 6,
+  terminalVelocity: -25,
+  /** 读档派生支撑面的高度上限；更高的屋顶不作为恢复候选。 */
+  recoveryMaxSupportHeight: 2,
+  character: {
+    /** 与人物模型归一化身高一致（脚底到头顶）。 */
+    height: PLAYER.model.height,
+    radius: PLAYER.radius,
+    /** 角色控制器与环境保持的数值间隙。 */
+    offset: 0.02,
+    /** 初始占位与支撑扫掠的最大容差；正式传送保持已校验的脚底高度。 */
+    spawnLift: 0.03,
+    queryEpsilon: 0.002,
+    minAnimationSpeed: 0.03,
+    maxSlopeClimbDegrees: 50,
+    minSlopeSlideDegrees: 40,
+  },
+} as const;
+
 /* ------------------------------------------------------------------ 环境 */
 
 /**

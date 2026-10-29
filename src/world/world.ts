@@ -13,7 +13,7 @@
  */
 
 import * as THREE from 'three';
-import { CAMERA, CITY, PLAYER } from '../content/config';
+import { CAMERA, CITY, PHYSICS, PLAYER } from '../content/config';
 import { INTERIOR } from '../content/interior';
 import {
   createBaseLayout,
@@ -68,6 +68,7 @@ import {
 import { CityBlocks, type BlocksReport } from './blocks/scene';
 import { insideAnyRect, planCityBlocks, type Rect } from './blocks/plan';
 import { SceneryAssetLibrary } from './scenery/assets';
+import { PhysicsRuntime } from './physics';
 
 const MOVE_KEYS: Record<string, keyof MoveInput> = {
   KeyW: 'forward',
@@ -179,6 +180,8 @@ export interface WorldCallbacks {
   onPointerLockChange?(locked: boolean): void;
   /** 碰撞就绪状态变化（楼体挂载完成/明确降级）时通知；供 app 层刷新遮罩与交互提示。 */
   onCollisionReadyChange?(ready: boolean): void;
+  /** Rapier/WASM 初始化失败；人物保持锁定，不能回退到第二套移动实现。 */
+  onPhysicsError?(message: string): void;
 }
 
 export interface FurnitureEditViewCallbacks {
@@ -273,6 +276,12 @@ export class World {
   /** 明确降级为占位外观的建筑诊断（只增不减，仅存在于内存）。 */
   private readonly visualFallbacks: string[] = [];
   private collisionReady = true;
+  /** Rapier 初始化与静态体是否可用；与楼体视觉就绪分开，但都参与人物门控。 */
+  private physics: PhysicsRuntime | null = null;
+  private physicsReady = false;
+  private physicsError: string | null = null;
+  /** 一次性跳跃请求；每帧由 World 传给物理层，处理或丢弃后清除。 */
+  private jumpRequested = false;
   /** 读档时等待碰撞就绪后再做「仅非法时」最小推出的原始 pose。 */
   private pendingRestorePose: PlayerPose | null = null;
 
@@ -298,7 +307,6 @@ export class World {
   private interiorGeneration = 0;
   /** 进入前记录的完整室外回归快照（位置、朝向、相机）。 */
   private outdoorSnapshot: WorldSaveData | null = null;
-  private interiorColliders: readonly Collider[] = [];
   /** 相机遮挡盒：墙体 + 家具 + 天花板/门洞封口（人物碰撞不使用）。 */
   private interiorOccluders: readonly Collider[] = [];
   private interiorBounds: PlayerBounds | null = null;
@@ -362,6 +370,66 @@ export class World {
 
     this.beginVisualLoading();
     void this.loadCharacter();
+    void this.initializePhysics();
+  }
+
+  /* ---------------------------------------------------------- 物理运行时 */
+
+  private async initializePhysics(): Promise<void> {
+    const initialPose = this.player.pose();
+    try {
+      const runtime = await PhysicsRuntime.create(
+        { x: initialPose.x, y: initialPose.y, z: initialPose.z },
+        PHYSICS.character.radius,
+      );
+      if (this.disposed) {
+        runtime.dispose();
+        return;
+      }
+      this.physics = runtime;
+      this.syncOutdoorPhysics();
+      // 初始化是异步的：期间可能已完成读档/新游戏恢复。以最新权威位置重置
+      // 插值历史，禁止旧请求把人物拉回初始化开始时的位置。
+      const current = this.player.pose();
+      runtime.teleport({ x: current.x, y: current.y, z: current.z });
+      this.physicsReady = true;
+      this.publishCollisionReady();
+    } catch (error) {
+      const message = `物理初始化失败：${describeError(error)}`;
+      this.physicsError = message;
+      console.error('[world] Rapier 初始化失败，人物移动保持锁定', error);
+      this.callbacks.onPhysicsError?.(message);
+      this.publishCollisionReady();
+    }
+  }
+
+  /** 把当前室外碰撞集合与动态边界交给物理层；只在物理已创建时调用。 */
+  private syncOutdoorPhysics(): void {
+    if (!this.physics || this.interiorMode !== 'outdoor') return;
+    this.physics.setCharacterRadius(PHYSICS.character.radius);
+    this.physics.setOutdoor(this.colliders, this.bounds, PLAYER_EDGE_MARGIN);
+  }
+
+  /** 室内静态结构 + 当前已提交家具；家具提交时重复调用会整体替换，避免旧体累积。 */
+  private syncInteriorPhysics(layout: ReadonlyFurnitureState | null): void {
+    if (!this.physics || !this.interior) return;
+    this.physics.setCharacterRadius(INTERIOR.player.collisionRadius);
+    this.physics.setInterior(
+      this.interior.structureColliders,
+      layout ? playerCollidersOf(layout) : [],
+      this.interior.bounds,
+      INTERIOR.room,
+      PLAYER.radius,
+    );
+  }
+
+  /** 唯一发布点：视觉与物理都就绪时才允许人物移动；室内只要求物理可用。 */
+  private publishCollisionReady(): void {
+    const ready = this.isCollisionReady();
+    this.notifyCollisionReadyChange(ready);
+    if (!ready) return;
+    for (const listener of [...this.readyListeners]) listener();
+    if (this.interiorMode === 'outdoor') this.applyPendingRestoreCorrection();
   }
 
   /* ---------------------------------------------------------- 布局同步 */
@@ -408,6 +476,7 @@ export class World {
     this.handles = this.city.buildings;
     this.rebuildColliders();
     this.planBlocks(layout);
+    if (this.interiorMode === 'outdoor') this.syncOutdoorPhysics();
     // 城区扩张后雾的基数随边界变化；天气修饰仍由环境系统叠加
     this.environment.setFogBase(this.city.fogBase.near, this.city.fogBase.far);
 
@@ -590,16 +659,15 @@ export class World {
     };
   }
 
-  /** 碰撞就绪：通知监听者，并把等待中的读档位置修正补上（仅当原位置非法时）。 */
+  /** 楼体视觉结算：物理未就绪时只记录，等物理就绪后统一发布。 */
   private markCollisionReady(): void {
     this.collisionReady = true;
-    this.notifyCollisionReadyChange(this.isCollisionReady());
-    for (const listener of [...this.readyListeners]) listener();
-    if (this.interiorMode === 'outdoor') this.applyPendingRestoreCorrection();
+    this.publishCollisionReady();
   }
 
-  /** 碰撞就绪：室内以室内场景为准（城市在后台更新不阻塞室内）；室外看城市楼体。 */
+  /** 碰撞就绪：物理必须已初始化；室外还要求当前布局楼体全部结算（成功或明确降级）。 */
   isCollisionReady(): boolean {
+    if (!this.physicsReady || this.physicsError !== null) return false;
     return this.interiorMode === 'indoor' ? true : this.collisionReady;
   }
 
@@ -610,7 +678,7 @@ export class World {
   onCollisionReady(listener: () => void): () => void {
     let active = true;
     this.readyListeners.add(listener);
-    if (this.collisionReady) {
+    if (this.isCollisionReady()) {
       queueMicrotask(() => {
         if (active && !this.disposed) listener();
       });
@@ -623,7 +691,7 @@ export class World {
 
   /** Promise 形式：读档流程可 `await world.whenCollisionReady()`。 */
   whenCollisionReady(): Promise<void> {
-    if (this.collisionReady) return Promise.resolve();
+    if (this.isCollisionReady()) return Promise.resolve();
     return new Promise((resolve) => {
       let unsubscribe: (() => void) | null = null;
       unsubscribe = this.onCollisionReady(() => {
@@ -668,11 +736,19 @@ export class World {
     if (this.interiorMode !== 'outdoor') {
       return { ok: false, message: '正在切换场景，请稍候' };
     }
-    if (!this.collisionReady) {
+    if (!this.isCollisionReady()) {
       return { ok: false, message: '城市仍在加载，请稍候' };
     }
+    if (!this.physics) {
+      return { ok: false, message: '物理尚未就绪，请稍候' };
+    }
 
-    const snapshot = this.getSaveData();
+    let snapshot: WorldSaveData;
+    try {
+      snapshot = this.getSaveData();
+    } catch (error) {
+      return { ok: false, message: describeError(error) };
+    }
     this.outdoorSnapshot = snapshot;
     this.interiorMode = 'loading';
     this.interiorGeneration += 1;
@@ -692,7 +768,7 @@ export class World {
         runtime.dispose();
         this.interiorMode = 'outdoor';
         this.outdoorSnapshot = null;
-        this.notifyCollisionReadyChange(this.isCollisionReady());
+        this.publishCollisionReady();
         return { ok: false, message: '当前已不是可进入的个人住宅' };
       }
 
@@ -710,7 +786,7 @@ export class World {
         runtime.dispose();
         this.interiorMode = 'outdoor';
         this.outdoorSnapshot = null;
-        this.notifyCollisionReadyChange(this.isCollisionReady());
+        this.publishCollisionReady();
         return {
           ok: false,
           message: '住宅出生点被家具占用，且没有安全落脚点；请先整理家具',
@@ -719,18 +795,36 @@ export class World {
 
       this.interior = runtime;
       this.furnitureLayout = layout;
-      this.interiorColliders = runtime.colliders;
       this.interiorOccluders = runtime.occluders;
       this.interiorBounds = runtime.bounds;
       this.interiorExit = runtime.exit;
+      this.syncInteriorPhysics(layout);
+      if (!this.physics?.isPoseFree(safeSpawn.x, 0, safeSpawn.z)) {
+        this.interior = null;
+        runtime.dispose();
+        this.interiorOccluders = [];
+        this.interiorBounds = null;
+        this.interiorExit = null;
+        this.furnitureLayout = null;
+        this.interiorMode = 'outdoor';
+        this.outdoorSnapshot = null;
+        this.syncOutdoorPhysics();
+        this.publishCollisionReady();
+        return {
+          ok: false,
+          message: '住宅出生点在三维空间中不合法；请先整理家具',
+        };
+      }
 
       this.city.scene.remove(this.player.group);
       runtime.scene.add(this.player.group);
       this.player.restore({
         x: safeSpawn.x,
+        y: 0,
         z: safeSpawn.z,
         facing: runtime.spawn.facing,
       });
+      this.physics?.teleport({ x: safeSpawn.x, y: 0, z: safeSpawn.z });
 
       this.yaw = INTERIOR.camera.spawnYaw;
       this.pitch = INTERIOR.camera.pitch.default;
@@ -745,12 +839,38 @@ export class World {
         INTERIOR.camera.near,
         INTERIOR.camera.far,
       );
-      this.notifyCollisionReadyChange(true);
+      this.publishCollisionReady();
       return { ok: true };
     } catch (error) {
       if (generation === this.interiorGeneration) {
+        // 提交阶段也可能失败：把已建立的场景、物理静态体与人物挂载全部退回室外，
+        // 不留半套室内状态；迟到的旧代次结果由代次检查自行释放。
+        if (this.interior) {
+          this.interior.scene.remove(this.player.group);
+          this.interior.dispose();
+          this.interior = null;
+        }
+        this.interiorOccluders = [];
+        this.interiorBounds = null;
+        this.interiorExit = null;
+        this.furnitureLayout = null;
         this.interiorMode = 'outdoor';
         this.outdoorSnapshot = null;
+        this.city.scene.add(this.player.group);
+        this.player.group.visible = true;
+        this.player.restore({
+          x: snapshot.player.x,
+          y: 0,
+          z: snapshot.player.z,
+          facing: snapshot.player.facing,
+        });
+        this.setCameraProjection(CAMERA.fov, CAMERA.near, CAMERA.far);
+        this.syncOutdoorPhysics();
+        this.physics?.teleport({ x: snapshot.player.x, y: 0, z: snapshot.player.z });
+        this.pendingRestorePose = this.player.pose();
+        this.placeCamera(0, true);
+        this.refreshNearbyBuilding();
+        this.publishCollisionReady();
       }
       return { ok: false, message: describeError(error) };
     }
@@ -770,7 +890,6 @@ export class World {
     this.city.scene.add(this.player.group);
     this.interior.dispose();
     this.interior = null;
-    this.interiorColliders = [];
     this.interiorOccluders = [];
     this.interiorBounds = null;
     this.interiorExit = null;
@@ -779,12 +898,16 @@ export class World {
     this.interiorMode = 'outdoor';
     this.setCameraProjection(CAMERA.fov, CAMERA.near, CAMERA.far);
     this.player.group.visible = true;
+    this.syncOutdoorPhysics();
 
     this.player.restore({
       x: snapshot.player.x,
+      y: 0,
       z: snapshot.player.z,
       facing: snapshot.player.facing,
     });
+    this.physics?.teleport({ x: snapshot.player.x, y: 0, z: snapshot.player.z });
+    this.pendingRestorePose = this.player.pose();
     if (snapshot.camera) {
       this.yaw = snapshot.camera.yaw;
       this.pitch = clamp(snapshot.camera.pitch, CAMERA.pitch.min, CAMERA.pitch.max);
@@ -798,7 +921,7 @@ export class World {
     this.clearInput();
     this.placeCamera(0, true);
     this.refreshNearbyBuilding();
-    this.notifyCollisionReadyChange(this.isCollisionReady());
+    this.publishCollisionReady();
     return true;
   }
 
@@ -812,7 +935,7 @@ export class World {
       this.interiorGeneration += 1;
       this.interiorMode = 'outdoor';
       this.outdoorSnapshot = null;
-      this.notifyCollisionReadyChange(this.isCollisionReady());
+      this.publishCollisionReady();
       return;
     }
     if (this.interiorMode === 'indoor') this.exitInterior();
@@ -824,6 +947,11 @@ export class World {
     return this.furnitureEditing;
   }
 
+  /** 当前是否为可靠落地状态；家具编辑入口用它避免空中进入编辑。 */
+  isPlayerGrounded(): boolean {
+    return this.physics?.isGrounded() ?? false;
+  }
+
   getFurnitureLayout(): ReadonlyFurnitureState | null {
     return this.furnitureLayout;
   }
@@ -832,9 +960,9 @@ export class World {
     this.furnitureLayout = layout;
     if (!this.interior) return;
     this.interior.applyFurnitureLayout(layout);
-    this.interiorColliders = this.interior.colliders;
     this.interiorOccluders = this.interior.occluders;
     this.furnitureEditor?.setLayout(layout);
+    this.syncInteriorPhysics(layout);
   }
 
   /**
@@ -876,6 +1004,7 @@ export class World {
         this.runFurnitureAction(() => handlers.place(id, cellX, cellZ)),
     };
     this.clearInput();
+    this.physics?.clearMotion();
     this.interior.setFurnitureEditMode(true);
     this.player.group.visible = false;
     this.furnitureView.onSelectionChange(null);
@@ -907,12 +1036,31 @@ export class World {
   exitFurnitureEdit(): { ok: boolean; message?: string } {
     if (!this.furnitureEditing) return { ok: true };
     const pose = this.player.pose();
-    if (!this.isInteriorPoseFree(pose.x, pose.z)) {
-      const safe = this.findSafeInteriorPose(pose);
-      if (!safe) {
-        return { ok: false, message: '请先为人物腾出站立空间，再退出编辑' };
+    let targetX = pose.x;
+    let targetZ = pose.z;
+    let targetY = pose.y;
+    const currentStanding = this.physics?.isStandingPoseFree(targetX, targetY, targetZ) ?? false;
+    if (!currentStanding) {
+      // 支撑被收纳后，优先落到同一 x/z 下可站立的较低表面。
+      const below = this.physics?.supportHeightAt(targetX, targetZ, pose.y);
+      if (below !== null && below !== undefined) targetY = below;
+      else {
+        const safe = this.findSafeInteriorPose(pose);
+        if (!safe) {
+          return { ok: false, message: '请先为人物腾出站立空间，再退出编辑' };
+        }
+        targetX = safe.x;
+        targetY = 0;
+        targetZ = safe.z;
       }
-      this.player.restore({ x: safe.x, z: safe.z, facing: pose.facing });
+    }
+    // 二维搜索只负责候选；最终落点必须同时有身体空间和可靠支撑。
+    if (!this.physics?.isStandingPoseFree(targetX, targetY, targetZ)) {
+      return { ok: false, message: '当前落点在三维空间中仍被阻挡，请先整理家具' };
+    }
+    if (targetX !== pose.x || targetY !== pose.y || targetZ !== pose.z) {
+      this.player.restore({ x: targetX, y: targetY, z: targetZ, facing: pose.facing });
+      this.physics?.teleport({ x: targetX, y: targetY, z: targetZ });
     }
     this.teardownFurnitureEdit(true);
     return { ok: true };
@@ -993,32 +1141,7 @@ export class World {
       this.setCameraProjection(snapshot.fov, snapshot.near, snapshot.far);
     }
     this.clearInput();
-  }
-
-  private isInteriorPoseFree(x: number, z: number): boolean {
-    const bounds = this.interiorBounds;
-    if (!bounds) return false;
-    const edge = PLAYER.radius;
-    const radius = INTERIOR.player.collisionRadius;
-    if (
-      !(x > bounds.minX + edge && x < bounds.maxX - edge) ||
-      !(z > bounds.minZ + edge && z < bounds.maxZ - edge)
-    ) {
-      return false;
-    }
-    for (const collider of this.interiorColliders) {
-      if (this.hits2D(x, z, collider, radius)) return false;
-    }
-    return true;
-  }
-
-  private hits2D(x: number, z: number, collider: Collider, radius: number): boolean {
-    return (
-      x > collider.minX - radius &&
-      x < collider.maxX + radius &&
-      z > collider.minZ - radius &&
-      z < collider.maxZ + radius
-    );
+    this.physics?.clearMotion();
   }
 
   /**
@@ -1092,11 +1215,17 @@ export class World {
 
     if (!corrected) return;
 
-    // 修正只改位置，朝向沿用存档里的原值
+    // 修正只改位置，朝向沿用存档里的原值；地面恢复语义下从 y=0 开始。
     this.player.restore({
       x: clamp(x, minX, maxX),
+      y: 0,
       z: clamp(z, minZ, maxZ),
       facing: pose.facing,
+    });
+    this.physics?.teleport({
+      x: clamp(x, minX, maxX),
+      y: 0,
+      z: clamp(z, minZ, maxZ),
     });
     this.placeCamera(0, true);
     this.refreshNearbyBuilding();
@@ -1157,7 +1286,8 @@ export class World {
 
     const candidate = this.minimalSceneryPush(pose.x, pose.z);
     if (candidate && this.isTrustedStanding(candidate.x, candidate.z)) {
-      this.player.restore({ x: candidate.x, z: candidate.z, facing: pose.facing });
+      this.player.restore({ x: candidate.x, y: 0, z: candidate.z, facing: pose.facing });
+      this.physics?.teleport({ x: candidate.x, y: 0, z: candidate.z });
       this.placeCamera(0, true);
       this.refreshNearbyBuilding();
       return;
@@ -1169,6 +1299,7 @@ export class World {
       console.warn(`[world] 旧档位置与装饰街区冲突，已临时抑制 ${blockId}（仅本次会话，不写存档）`);
     }
     this.rebuildColliders();
+    this.syncOutdoorPhysics();
     this.refreshNearbyBuilding();
   }
 
@@ -1218,12 +1349,47 @@ export class World {
     return insideAnyRect(this.walkable, x, z, PLAYER.radius * 0.5);
   }
 
-  /** 碰撞就绪后：如果读档时原位置非法，做一次最小必要推出。 */
+  /** 只读派生可恢复落点；不修改人物、镜头或装饰抑制状态。 */
+  private findOutdoorRecoveryPose(pose: PlayerPose): { x: number; y: number; z: number } | null {
+    const physics = this.physics;
+    if (!physics) return null;
+    const y = physics.supportHeightAt(pose.x, pose.z);
+    if (y !== null) return { x: pose.x, y, z: pose.z };
+    const safe = findSafeStandingPose({
+      pose,
+      shell: this.buildingColliders,
+      furniture: this.colliders.slice(this.buildingColliders.length),
+      bounds: this.bounds,
+      radius: PLAYER.radius,
+      edgeMargin: PLAYER_EDGE_MARGIN,
+    });
+    if (!safe) return null;
+    const support = physics.supportHeightAt(safe.x, safe.z);
+    return support === null ? null : { x: safe.x, y: support, z: safe.z };
+  }
+
+  /** 碰撞就绪后校验整个胶囊与支撑；合法低矮实体顶面不会被二维算法推走。 */
   private applyPendingRestoreCorrection(): void {
     if (this.pendingRestorePose === null) return;
+    const pose = this.pendingRestorePose;
     this.pendingRestorePose = null;
-    this.ensurePlayerNotInsideBuildings();
-    this.resolveSceneryConflict();
+    let recovery = this.findOutdoorRecoveryPose(pose);
+    if (!recovery) {
+      // 旧档确实非法时才沿用既有最小推出/装饰抑制策略。
+      this.ensurePlayerNotInsideBuildings();
+      this.resolveSceneryConflict();
+      recovery = this.findOutdoorRecoveryPose(this.player.pose());
+    }
+    if (!recovery) {
+      this.physicsError = '人物恢复失败：附近没有身体空间和支撑均合法的落点';
+      this.callbacks.onPhysicsError?.(this.physicsError);
+      this.notifyCollisionReadyChange(false);
+      return;
+    }
+    this.player.restore({ ...recovery, facing: pose.facing });
+    this.physics?.teleport(recovery);
+    this.placeCamera(0, true);
+    this.refreshNearbyBuilding();
   }
 
   /** 人物资源是交付要求；失败时保留占位模型并在控制台明确报错。 */
@@ -1253,6 +1419,15 @@ export class World {
       ) {
         return;
       }
+    }
+
+    // 空格跳跃：只接受一次按下；空中/暂停/面板/未锁定/碰撞未就绪时 movementAllowed 为 false。
+    if (event.code === 'Space') {
+      if (event.repeat) return;
+      if (!this.pointerLocked || !this.movementAllowed) return;
+      event.preventDefault();
+      this.jumpRequested = true;
+      return;
     }
 
     // Shift 切换疾跑：只按一次生效，长按不反复切换；keyup 不改变模式
@@ -1338,6 +1513,7 @@ export class World {
     this.input.back = false;
     this.input.left = false;
     this.input.right = false;
+    this.jumpRequested = false;
     // 失焦、鼠标解锁、打开面板、读档、重开、暂停都会走这里，疾跑状态一并复位
     this.sprinting = false;
   }
@@ -1412,46 +1588,78 @@ export class World {
   ): void {
     // 室内不更新室外雨幕、太阳与天空；退出后由 app 的下一帧按最新状态重新采样。
     if (this.interiorMode === 'indoor') return;
-    const pose = this.player.pose();
+    const pose = this.player.displayPose();
     this.environment.update(minute, dtSeconds, weather, pose.x, pose.z);
   }
 
-  update(dtMoveSeconds: number, canMove: boolean, moveMultiplier = 1): PlayerUpdateResult {
-    if (this.interiorMode === 'indoor' && this.interiorBounds) {
-      const canMoveNow = canMove && !this.disposed && !this.furnitureEditing;
-      this.movementAllowed = canMoveNow;
-      const dir = canMoveNow ? this.readMoveDirection() : { x: 0, z: 0 };
-      return this.player.update(
+  /**
+   * 推进人物。
+   *
+   * `physicsPaused` 只表示手动暂停 / 菜单暂停 / 页面隐藏 / 家具编辑；业务面板
+   * 打开时传 false，于是水平输入被锁但已有竖直运动继续落地。
+   */
+  update(
+    dtMoveSeconds: number,
+    canMove: boolean,
+    moveMultiplier = 1,
+    physicsPaused = false,
+  ): PlayerUpdateResult {
+    const modeReady = this.interiorMode === 'outdoor' || this.interiorMode === 'indoor';
+    const canMoveNow =
+      canMove &&
+      !this.disposed &&
+      !this.furnitureEditing &&
+      modeReady &&
+      this.isCollisionReady();
+    this.movementAllowed = canMoveNow;
+    if (!canMoveNow) this.jumpRequested = false;
+
+    const pose = this.player.pose();
+    const physics = this.physics;
+    if (!physics) {
+      return this.player.updateFromPhysics(
         dtMoveSeconds,
-        dir,
-        this.interiorColliders,
-        this.interiorBounds,
-        canMoveNow,
-        canMoveNow && this.sprinting,
-        moveMultiplier,
-        PLAYER.radius,
-        INTERIOR.player.collisionRadius,
+        pose,
+        this.player.displayPose(),
+        0,
+        0,
+        false,
       );
     }
 
-    // 碰撞未就绪（GLB 仍在加载）时即使 app 层传允许移动也必须锁住，
-    // 避免用布局 AABB 走完后模型变大把人物卡进建筑。
-    const canMoveNow = canMove && this.collisionReady && this.interiorMode === 'outdoor';
-    this.movementAllowed = canMoveNow;
-    // 即使不能移动也要推进一帧，让动画平滑回到待机而不是冻结在行走姿势
     const dir = canMoveNow ? this.readMoveDirection() : { x: 0, z: 0 };
-    const bounds: PlayerBounds = this.bounds;
-    const result = this.player.update(
-      dtMoveSeconds,
-      dir,
-      this.colliders,
-      bounds,
-      canMoveNow,
+    const length = Math.hypot(dir.x, dir.z);
+    const targetSpeed =
+      (this.sprinting ? PLAYER.speed * PLAYER.sprintMultiplier : PLAYER.speed) *
+      Math.max(0, Math.min(1, moveMultiplier));
+    const velocityX = length > 1e-6 ? (dir.x / length) * targetSpeed : 0;
+    const velocityZ = length > 1e-6 ? (dir.z / length) * targetSpeed : 0;
+
+    const frozen =
+      physicsPaused ||
+      !this.physicsReady ||
+      this.physicsError !== null ||
+      !this.isCollisionReady() ||
+      this.interiorMode === 'loading';
+    const result = physics.advance(dtMoveSeconds, {
+      velocityX,
+      velocityZ,
+      jump: this.jumpRequested,
+      allowInput: canMoveNow && !frozen,
+      frozen,
+    });
+    if (result.jumpHandled) this.jumpRequested = false;
+
+    const playerResult = this.player.updateFromPhysics(
+      frozen ? 0 : dtMoveSeconds,
+      result.authoritative,
+      result.display,
+      result.velocityX,
+      result.velocityZ,
       canMoveNow && this.sprinting,
-      moveMultiplier,
     );
     if (this.interiorMode === 'outdoor') this.refreshNearbyBuilding();
-    return result;
+    return playerResult;
   }
 
   /**
@@ -1514,8 +1722,8 @@ export class World {
 
   /** 室内近距第三人称：滚轮范围与遮挡硬下限分离，避障优先。 */
   private placeInteriorCamera(dtSeconds: number, immediate: boolean): void {
-    const pose = this.player.pose();
-    const target = new THREE.Vector3(pose.x, INTERIOR.camera.targetHeight, pose.z);
+    const pose = this.player.displayPose();
+    const target = new THREE.Vector3(pose.x, pose.y + INTERIOR.camera.targetHeight, pose.z);
     if (immediate) {
       this.followTarget.copy(target);
       this.currentDistance = this.desiredDistance;
@@ -1557,8 +1765,8 @@ export class World {
   }
 
   private placeCamera(dtSeconds: number, immediate: boolean): void {
-    const pose = this.player.pose();
-    const target = new THREE.Vector3(pose.x, CAMERA.targetHeight, pose.z);
+    const pose = this.player.displayPose();
+    const target = new THREE.Vector3(pose.x, pose.y + CAMERA.targetHeight, pose.z);
     if (immediate) {
       this.followTarget.copy(target);
       this.currentDistance = this.desiredDistance;
@@ -1620,8 +1828,11 @@ export class World {
     // 加载中/室内：保存进入前的室外回归快照，经济与物品仍是保存瞬间的最新状态。
     if (this.interiorMode !== 'outdoor' && this.outdoorSnapshot) return this.outdoorSnapshot;
     const pose = this.player.pose();
+    if (!this.isCollisionReady()) throw new Error('场景碰撞尚未就绪，暂时无法保存人物位置');
+    const recovery = this.findOutdoorRecoveryPose(pose);
+    if (!recovery) throw new Error('当前位置没有可安全恢复的落点，暂时无法保存');
     return {
-      player: { x: pose.x, z: pose.z, facing: pose.facing },
+      player: { x: recovery.x, z: recovery.z, facing: pose.facing },
       camera: { yaw: this.yaw, pitch: this.pitch, distance: this.desiredDistance },
       revision: 3,
     };
@@ -1635,12 +1846,15 @@ export class World {
    */
   restore(data: WorldSaveData): void {
     this.cancelInterior();
+    if (this.physics) this.physicsError = null;
     const pose: PlayerPose = {
       x: data.player.x,
+      y: 0,
       z: data.player.z,
       facing: data.player.facing,
     };
     this.player.restore(pose);
+    this.physics?.teleport({ x: pose.x, y: pose.y, z: pose.z });
     if (data.camera) {
       this.yaw = data.camera.yaw;
       this.pitch = clamp(data.camera.pitch, CAMERA.pitch.min, CAMERA.pitch.max);
@@ -1654,21 +1868,17 @@ export class World {
     this.clearInput();
     this.placeCamera(0, true);
     this.refreshNearbyBuilding();
-    if (this.collisionReady) {
-      // 模型已就绪：立即用最终碰撞体做一次「仅非法时」修正
-      this.pendingRestorePose = null;
-      this.ensurePlayerNotInsideBuildings();
-      this.resolveSceneryConflict();
-    } else {
-      // 模型仍在加载：保留 pose，等碰撞就绪后再修正；期间由 app 锁移动与交互
-      this.pendingRestorePose = pose;
-    }
+    // 始终先记下原始存档 x/z；碰撞就绪后按地面/低矮实体顶部派生 y。
+    this.pendingRestorePose = pose;
+    if (this.isCollisionReady()) this.applyPendingRestoreCorrection();
   }
 
   resetToSpawn(): void {
     this.cancelInterior();
+    if (this.physics) this.physicsError = null;
     this.pendingRestorePose = null;
-    this.player.restore({ x: CITY.spawn.x, z: CITY.spawn.z, facing: Math.PI });
+    this.player.restore({ x: CITY.spawn.x, y: 0, z: CITY.spawn.z, facing: Math.PI });
+    this.physics?.teleport({ x: CITY.spawn.x, y: 0, z: CITY.spawn.z });
     this.yaw = 0;
     this.pitch = CAMERA.pitch.default;
     this.desiredDistance = CAMERA.distance.default;
@@ -1699,7 +1909,6 @@ export class World {
     }
     this.interiorMode = 'outdoor';
     this.outdoorSnapshot = null;
-    this.interiorColliders = [];
     this.interiorOccluders = [];
     this.interiorBounds = null;
     this.interiorExit = null;
@@ -1713,6 +1922,9 @@ export class World {
     document.removeEventListener('mousemove', this.handleMouseMove);
     document.removeEventListener('pointerlockchange', this.pointerLockHandler);
     this.player.dispose();
+    this.physics?.dispose();
+    this.physics = null;
+    this.physicsReady = false;
     this.environment.dispose();
     // 顺序不能改：装饰街区 -> 场景（含路网）-> 街景共享库 -> 建筑工厂
     this.blocks.dispose();

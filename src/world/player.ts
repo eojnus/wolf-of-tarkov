@@ -1,14 +1,13 @@
 /**
- * 玩家角色 —— 第三人称移动、碰撞、朝实际移动方向转身、动画驱动。
+ * 玩家角色表现 —— 权威位移由物理层给出，本类只消费结果。
  *
- * 位移由代码控制；人物动画不含根位移，不做叠加。
- * 是否播放行走/跑步由「本帧实际产生的位移」决定，撞墙没有位移时不会空转。
+ * 负责：脚底原点的位置、朝向、实际位移驱动的转身与动画；
+ * 不负责：碰撞、重力、跳跃或场景查询。这样人物只有一套权威位移。
  */
 
 import * as THREE from 'three';
-import { CITY, PLAYER, TIME } from '../content/config';
+import { CITY, PHYSICS, PLAYER } from '../content/config';
 import type { CharacterRig } from './character';
-import type { Collider } from './scene';
 
 export interface MoveInput {
   forward: boolean;
@@ -26,6 +25,7 @@ export const EMPTY_INPUT: MoveInput = {
 
 export interface PlayerPose {
   readonly x: number;
+  readonly y: number;
   readonly z: number;
   readonly facing: number;
 }
@@ -39,8 +39,8 @@ export interface PlayerUpdateResult {
 /**
  * 人物可移动的世界边界（米，世界坐标）。
  *
- * 由 world 从**当前逻辑地图**的 bounds 传入，与地面渲染、读档位置修正同源；
- * player 不读取布局模块，也不自己用固定城市尺寸。
+ * 室外由当前逻辑地图的 bounds 传入，室内由房间边界传入；物理运行时负责在
+ * 每一步之后夹取中心位置，player 自身不再做边界/碰撞判断。
  */
 export interface PlayerBounds {
   readonly minX: number;
@@ -52,26 +52,10 @@ export interface PlayerBounds {
 /** 人物中心与城区外边界保留的距离（与地面边缘一致），避免走到地面之外。 */
 export const PLAYER_EDGE_MARGIN = 1.5;
 
-const ZERO_RESULT: PlayerUpdateResult = { moved: false, distance: 0, speed: 0 };
-
-function hits(x: number, z: number, colliders: readonly Collider[], radius: number): boolean {
-  for (const collider of colliders) {
-    if (
-      x > collider.minX - radius &&
-      x < collider.maxX + radius &&
-      z > collider.minZ - radius &&
-      z < collider.maxZ + radius
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /** 最短弧插值，避免从 179° 转到 -179° 时绕一大圈。 */
 function lerpAngle(from: number, to: number, t: number): number {
   const twoPi = Math.PI * 2;
-  let diff = (((to - from + Math.PI) % twoPi) + twoPi) % twoPi - Math.PI;
+  const diff = ((((to - from + Math.PI) % twoPi) + twoPi) % twoPi) - Math.PI;
   return from + diff * t;
 }
 
@@ -80,13 +64,22 @@ export class Player {
   private readonly placeholder: THREE.Group;
   private readonly body: THREE.Mesh;
   private readonly head: THREE.Mesh;
+  private readonly shadow: THREE.Mesh;
   private character: CharacterRig | null = null;
+  /** 权威脚底位置：碰撞、交互、落点与存档使用。 */
+  private authX: number;
+  private authY = 0;
+  private authZ: number;
+  /** 表现脚底位置：场景显示与镜头使用，允许落后一个物理步插值。 */
   private posX: number;
+  private posY = 0;
   private posZ: number;
   private facingRad: number;
   private walkPhase = 0;
 
   constructor() {
+    this.authX = CITY.spawn.x;
+    this.authZ = CITY.spawn.z;
     this.posX = CITY.spawn.x;
     this.posZ = CITY.spawn.z;
     this.facingRad = Math.PI;
@@ -108,11 +101,11 @@ export class Player {
       opacity: 0.2,
       depthWrite: false,
     });
-    const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 22), shadowMaterial);
-    shadow.rotation.x = -Math.PI / 2;
-    shadow.position.y = 0.02;
+    this.shadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 22), shadowMaterial);
+    this.shadow.rotation.x = -Math.PI / 2;
+    this.shadow.position.y = 0.02;
 
-    this.group.add(this.placeholder, shadow);
+    this.group.add(this.placeholder, this.shadow);
     this.group.position.set(this.posX, 0, this.posZ);
     this.group.rotation.y = this.facingRad;
   }
@@ -128,96 +121,69 @@ export class Player {
     return this.character !== null;
   }
 
+  /** 权威位置：碰撞、交互、落点、存档。 */
   pose(): PlayerPose {
-    return { x: this.posX, z: this.posZ, facing: this.facingRad };
+    return { x: this.authX, y: this.authY, z: this.authZ, facing: this.facingRad };
   }
 
+  /** 表现位置：只用于渲染、镜头与环境跟随，不得用于碰撞/交互/存档。 */
+  displayPose(): { x: number; y: number; z: number } {
+    return { x: this.posX, y: this.posY, z: this.posZ };
+  }
+
+  /** 场景切换/读档的权威落点；物理层会另行清理竖直速度与插值历史。 */
   restore(pose: PlayerPose): void {
+    this.authX = pose.x;
+    this.authY = pose.y;
+    this.authZ = pose.z;
     this.posX = pose.x;
+    this.posY = pose.y;
     this.posZ = pose.z;
     this.facingRad = pose.facing;
-    this.group.position.set(this.posX, 0, this.posZ);
-    this.group.rotation.y = this.facingRad;
+    this.applyTransform();
     this.character?.update(0, false, 0, false);
   }
 
   /**
-   * 推进一帧。dir 是已转换到世界空间的移动方向（长度 0 表示没有输入）。
+   * 消费一次物理结果。
    *
-   * 位移按「每步不超过半径一半」切成子步逐个做 X/Z 分离碰撞，
-   * 避免疾跑时单帧位移大于建筑厚度而穿模。动画与转身在整帧位移结束后
-   * 统一按**实际位移**更新，因此贴墙滑动时朝向与实际移动一致。
-   *
-   * `bounds` 来自当前逻辑地图（world 传入），是移动边界的唯一来源。
-   * `speedMultiplier` 由应用层根据生存状态传入（0～1）；本类不读取任何业务状态。
+   * 位置显示用插值，动画与转身用物理步实际速度，两个时间口径互不混算。
    */
-  update(
+  updateFromPhysics(
     dtSeconds: number,
-    dir: { x: number; z: number },
-    colliders: readonly Collider[],
-    bounds: PlayerBounds,
-    canMove: boolean,
+    authoritative: { readonly x: number; readonly y: number; readonly z: number },
+    display: { readonly x: number; readonly y: number; readonly z: number },
+    velocityX: number,
+    velocityZ: number,
     sprinting: boolean,
-    speedMultiplier = 1,
-    edgeMargin = PLAYER_EDGE_MARGIN,
-    collisionRadius: number = PLAYER.radius,
   ): PlayerUpdateResult {
-    const length = Math.hypot(dir.x, dir.z);
-    if (!canMove || length < 1e-6 || dtSeconds <= 0) {
-      this.character?.update(dtSeconds, false, 0, false);
-      this.animatePlaceholder(0, false);
-      return ZERO_RESULT;
-    }
+    const distance = Math.hypot(display.x - this.posX, display.z - this.posZ);
+    this.authX = authoritative.x;
+    this.authY = authoritative.y;
+    this.authZ = authoritative.z;
+    this.posX = display.x;
+    this.posY = display.y;
+    this.posZ = display.z;
 
-    const moveDt = Math.min(dtSeconds, TIME.maxMoveDeltaMs / 1000);
-    const multiplier = Math.max(0, Math.min(1, speedMultiplier));
-    const targetSpeed = (sprinting ? PLAYER.speed * PLAYER.sprintMultiplier : PLAYER.speed) * multiplier;
-    const totalDistance = targetSpeed * moveDt;
-
-    const dirX = dir.x / length;
-    const dirZ = dir.z / length;
-    const minX = bounds.minX + edgeMargin;
-    const maxX = bounds.maxX - edgeMargin;
-    const minZ = bounds.minZ + edgeMargin;
-    const maxZ = bounds.maxZ - edgeMargin;
-    const radius = collisionRadius;
-    const beforeX = this.posX;
-    const beforeZ = this.posZ;
-
-    const maxStep = radius / 2;
-    const steps = Math.max(1, Math.ceil(totalDistance / maxStep));
-    const stepLength = totalDistance / steps;
-
-    for (let i = 0; i < steps; i += 1) {
-      const nextX = this.posX + dirX * stepLength;
-      if (!hits(nextX, this.posZ, colliders, radius) && nextX > minX && nextX < maxX) {
-        this.posX = nextX;
-      }
-      const nextZ = this.posZ + dirZ * stepLength;
-      if (!hits(this.posX, nextZ, colliders, radius) && nextZ > minZ && nextZ < maxZ) {
-        this.posZ = nextZ;
-      }
-    }
-
-    const deltaX = this.posX - beforeX;
-    const deltaZ = this.posZ - beforeZ;
-    const distance = Math.hypot(deltaX, deltaZ);
-    const moved = distance > 0.0005;
-    const speed = dtSeconds > 0 ? distance / dtSeconds : 0;
-
-    if (moved) {
-      // 朝向跟随实际位移方向：沿墙滑动时不会朝着墙里「原地走」
-      const target = Math.atan2(deltaX, deltaZ);
+    const speed = Math.hypot(velocityX, velocityZ);
+    const moved = speed > PHYSICS.character.minAnimationSpeed;
+    if (dtSeconds > 0 && moved) {
+      const target = Math.atan2(velocityX, velocityZ);
       const k = 1 - Math.exp(-PLAYER.turnLambda * dtSeconds);
       this.facingRad = lerpAngle(this.facingRad, target, k);
-      this.group.rotation.y = this.facingRad;
     }
+    this.applyTransform();
 
-    this.group.position.set(this.posX, 0, this.posZ);
-    this.character?.update(dtSeconds, moved, speed, sprinting);
+    this.character?.update(dtSeconds, moved, speed, sprinting && moved);
     this.animatePlaceholder(dtSeconds, moved);
-
     return { moved, distance, speed };
+  }
+
+  private applyTransform(): void {
+    this.group.position.set(this.posX, this.posY, this.posZ);
+    this.group.rotation.y = this.facingRad;
+    // 脚下的贴地圆片留在场景地面，不随跳跃一起浮起。
+    this.shadow.position.y = 0.02 - this.posY;
   }
 
   /** 模型未加载时的占位起伏，避免完全静止的观感。 */

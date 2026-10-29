@@ -118,7 +118,7 @@ export class Hud {
         <button type="button" class="btn btn-sm btn-ghost" data-el="save">${icon('save', { size: 14 })}保存</button>
       </div>
 
-      <div class="hint-text">WASD 移动 · Shift 疾跑 · 鼠标转视角 · 滚轮缩放 · F 交互 · Tab 个人界面 · Esc 暂停</div>
+      <div class="hint-text">WASD 移动 · Shift 疾跑 · Space 跳跃 · 鼠标转视角 · 滚轮缩放 · F 交互 · Tab 个人界面 · Esc 暂停</div>
 
       <div class="lock-overlay" data-el="lock" hidden>
         <div class="lock-card">

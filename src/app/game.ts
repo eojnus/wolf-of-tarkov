@@ -156,6 +156,9 @@ export class Game {
       onPointerLockChange: (locked) => this.handlePointerLockChange(locked),
       // 碰撞就绪前锁移动与 F 交互（经济模拟不暂停）；就绪后刷新提示与遮罩
       onCollisionReadyChange: (ready) => this.handleCollisionReadyChange(ready),
+      onPhysicsError: (message) => {
+        this.toast.show('error', `${message}；人物移动已锁定，请刷新页面重试`);
+      },
     });
     this.syncWorldLayout();
     this.collisionReady = this.world.isCollisionReady();
@@ -422,6 +425,7 @@ export class Game {
       moveDeltaMs / 1000,
       canMove,
       moveMultiplierOf(this.store.state.survival),
+      paused || this.world.isFurnitureEditing(),
     );
     this.hud.setMovementMode(this.world.isSprinting());
     this.world.updateFurnitureEdit(moveDeltaMs / 1000, paused);
@@ -691,12 +695,7 @@ export class Game {
       return;
     }
 
-    if (event.code === 'Space') {
-      event.preventDefault();
-      // 面板/菜单打开时不允许用空格改底层手动暂停：可见状态与真实状态必须一致
-      if (this.panels.isOpen) return;
-      this.handleTogglePause();
-    }
+    // 空格跳跃由 World 的输入处理消费；这里不再绑定暂停。
   }
 
   /** 手动暂停/继续。切换后清理移动与疾跑输入，避免恢复时残留。 */
@@ -899,6 +898,10 @@ export class Game {
       !this.collisionReady
     ) {
       this.toast.show('info', '住宅尚未准备好，请稍候');
+      return;
+    }
+    if (!this.world.isPlayerGrounded()) {
+      this.toast.show('info', '落地后再整理家具');
       return;
     }
     const session = this.furnitureSession + 1;
@@ -1295,9 +1298,9 @@ export class Game {
   }
 
   private async performSave(slot: SaveSlot, silent: boolean): Promise<void> {
-    const snapshot = this.buildCurrentSnapshot(slot === 'manual' ? 'manual' : 'auto');
-    if (!silent) this.hud.setSaveState('保存中…', 'idle');
     try {
+      const snapshot = this.buildCurrentSnapshot(slot === 'manual' ? 'manual' : 'auto');
+      if (!silent) this.hud.setSaveState('保存中…', 'idle');
       await writeSnapshot(slot, snapshot);
       const label = formatSaveTime(this.store.state.clock.totalMinute);
       this.hud.setSaveState(`${slot === 'manual' ? '已保存' : '已自动保存'} ${label}`, 'ok');
