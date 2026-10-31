@@ -1,4 +1,4 @@
-﻿# 架构说明（当前实现）
+# 架构说明（当前实现）
 
 本文只描述**现在**的结构与规则。历史变更的理由在 `decisions.md`，具体接口约束在 `contracts.md`。
 规则变了就直接改这里，不再按「某一轮修复」追加章节。
@@ -82,7 +82,7 @@ infrastructure/ 存档
   storage.ts        入口：槽位读写、快照、导入导出、读档编排
   save-types.ts     公共类型（不依赖任何实现）
   save-database.ts  IndexedDB 原始读写（不理解玩法）
-  save-migrations.ts v1 → v19 迁移链、受控旧数据修复、读档兼容规范化
+  save-migrations.ts v1 → v20 迁移链、受控旧数据修复、读档兼容规范化
   save-validation.ts 字段与跨切片一致性校验
 
 ui/            只渲染只读视图并提交命令；不持有经济数据
@@ -903,3 +903,45 @@ AI 买住宅：   投资者账户 → 卖方主体        （受「余额 − �
 - 家具编辑保持合法高处站位；支撑被收纳时优先检查同一 x/z 的较低支撑。二维搜索只提供候选，
   最终落点仍校验三维身体空间、边界与实际支撑，失败保持编辑态。
 - 家具提交/布局同步整体替换静态体，过期异步回调不注册物理体；销毁时释放角色控制器、静态体与物理世界。
+
+### 19.5 人物资源、语义动作与跳跃表现（2026-10-31）
+
+- 资源：`world/character.ts` 统一加载角色。`.usdz` 使用 `USDLoader`，其他扩展名保留 `GLTFLoader`；
+  两者都整理为 `{ root, clips, dispose }`，动画控制不依赖文件扩展名。加载失败仍由 `World` 保留占位模型并记录错误。
+- 当前模型：Alina_Ip（Sketchfab / Jungle Jim，CC BY 4.0，见 `public/assets/SOURCES.md`）。
+  只有一个 `_359960820992_TempMotion` 片段（22.63 s，101 根骨骼），实际为原地待机/重心转移展示动作；
+  取 0–1.5 s 作为 idle 循环，并移除骨骼根的平移/旋转/缩放轨道。
+- 语义动作：`idle / walk / run / jumpStart / airborne / land` 的片段映射集中在
+  `content/config.ts#PLAYER.model.clips`；缺失片段且有完整骨骼映射时使用程序化姿态，
+  缺失且无法程序化时记录明确诊断并退回 idle。walk/run 不是把待机动作加速，jump 阶段不改变物理参数。
+- 跳跃表现数据：`PhysicsStepResult` 增加只读的 `verticalVelocity`、`leftGround`、`touchedGround`。
+  后两者在 `advance` 内逐固定步比较前后 `grounded` 累计，同一渲染帧多个物理步的起跳/落地不会丢失；
+  `steps = 0` 不产生新事件。动画不使用 `jumpHandled` 判断起跳成功。
+- 控制：物理结果经 `World → Player → CharacterRig` 传递；地面走/跑与跳跃阶段按权重互斥，
+  落地后先播放缓冲再回到 idle/走/跑。步频由实际水平速度与配置步幅换算。
+- 朝向同步：程序化动作每帧从角色 `inner` 的世界四元数取本地 X/Y/Z 轴，不使用固定世界轴；
+  `Player` 先写 `group` 朝向，再调用 `CharacterRig.update`。这样同一动作在任意朝向都保持相同的相对身体姿态。
+- 根运动：所有源片段移除骨骼根轨道，程序化姿态也不写根位移；位移、朝向、重力、跳跃与碰撞仍只由
+  `world/physics` 和 `Player` 决定。读档/场景切换/位置恢复调用 `CharacterRig.reset()`，不新增存档字段。
+- 暂停/冻结：`frozen` 时 World 给动画的 dt 为 0，姿态停在最后一帧；业务面板仍继续竖直物理与接地事件。
+- 释放：停止 mixer、清理缓存、释放本角色子树的几何/材质/贴图并撤销纹理 blob URL；
+  不释放城市场景或其他对象共享的资源。
+
+## 20. Windows 桌面壳（Electron，2026-10-31）
+
+桌面化只增加运行壳，不改游戏分层、经济规则、存档格式与迁移链。
+
+```
+游戏 / UI → src/platform/desktop.ts → preload 的受限桥
+          → desktop:before-close / desktop:close-ready
+          → desktop/main.cjs
+```
+
+- 主进程只负责窗口、生命周期、单实例、`app://game/` 资源协议、CSP、权限白名单（仅主窗口的 pointerLock）、菜单/全屏、About 与关闭协调；不读写游戏状态。
+- preload 在沙箱中运行，只暴露 `onBeforeClose(handler)`；不暴露 `ipcRenderer`、通用 `send/invoke`、文件系统或 shell。
+- `src/core`、`src/features`、`src/app` 不导入 Electron/Node.js；浏览器中桥不存在，原有行为不变。
+- 生产来源固定为 `app://game`（standard + secure），IndexedDB 因此有稳定来源并写入 `%APPDATA%\WolfOfTarkov`；开发使用 `http://127.0.0.1:5173/` 与 `%APPDATA%\WolfOfTarkov-dev`，数据隔离。
+- 窗口默认 1440×900、最小 1024×640；F11 原生全屏；页面隐藏/最小化继续暂停模拟，不补算后台时间。
+- 关闭窗口先等待所有已启动的存档写入（手动 + 自动，最长 4 秒），再退出；不额外生成存档，超时/失败不会被描述为保存成功。
+- 存档仍由 `infrastructure/storage` 与现有 IndexedDB 负责，桌面版不创建第二套存档权威，也不自动读取浏览器数据。
+- 详细协议校验、MIME、CSP 例外、数据位置和构建命令见 `docs/desktop.md`。

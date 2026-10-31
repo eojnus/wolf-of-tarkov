@@ -2,7 +2,7 @@
 
 一款以现代城市生活、创业经营和资本投资为核心的单人 3D 模拟游戏。玩家在塔科夫市工作、管理个人生活、创办科技公司、研发产品并参与股票投资；城市人口、政府选举和城区建设会随游戏时间持续演化。
 
-项目处于持续开发阶段。目前是本地运行的浏览器游戏，无后端服务，也不包含多人联机。
+项目处于持续开发阶段，支持本地浏览器开发，Windows Electron 桌面版处于改造与验收中；无游戏后端服务，不包含多人联机。
 
 ## 当前开发进度
 
@@ -17,7 +17,7 @@
 | 现代浅色 UI、浮动窗口、人口环形图与交互式 K 线 | 已合并主分支 |
 | 房地产、土地交易与宏观住房 | 已实现并通过本轮验收 |
 
-本页说明以 `main` 为准。功能分支中的方案和开发成果，验收合并后才计入主分支已实现功能。当前主分支存档格式为 v18；存档格式编号不等于游戏发布版本。
+本页同时说明当前工作树中的桌面改造；尚未合并的功能不能视为主分支交付。当前代码存档格式为 v20；存档格式编号不等于游戏发布版本。
 
 ## 已实现的功能
 
@@ -96,6 +96,26 @@ npm run preview    # 本地预览构建产物
 
 构建产物需要通过 HTTP 静态服务访问，不要直接双击 `dist/index.html`。
 
+## Windows 桌面版
+
+桌面版使用 Electron 内置 Chromium 与本机资源协议，不要求安装 Node.js、npm、浏览器或 Vite 服务。详细架构、安全边界与数据位置见 [桌面版说明](docs/desktop.md)。
+
+```bash
+npm ci
+npm run desktop:dev     # 开发：固定 127.0.0.1:5173 + Electron
+npm run build           # 类型检查 + Vite 生产构建
+npm run desktop:start   # 用 app://game/ 启动未打包生产构建（需先 build）
+npm run desktop:build   # 生成 NSIS 安装包到 release/
+```
+
+安装包默认创建桌面与开始菜单快捷方式，升级和卸载保留用户数据。桌面版存档位于 `%APPDATA%\WolfOfTarkov`，与浏览器存档相互独立；迁移请使用游戏内「导出 JSON / 导入 JSON」。卸载不会自动删除该目录。
+
+```text
+release/WolfOfTarkov-Setup-0.3.3.exe
+```
+
+桌面版当前只发布 Windows x64，安装包未签名；首版不包含自动更新。
+
 ## 基本操作
 
 | 操作 | 按键或入口 |
@@ -124,13 +144,17 @@ npm run preview    # 本地预览构建产物
 
 ## 开发与文档
 
-技术栈：Three.js、TypeScript、Vite、原生 HTML/CSS、IndexedDB。
+技术栈：Three.js、TypeScript、Vite、Electron、Rapier、原生 HTML/CSS、IndexedDB。
 
 - [架构说明](docs/architecture.md)：模块职责与数据边界。
 - [接口契约](docs/contracts.md)：公共接口、结算和存档约定。
 - [技术决策](docs/decisions.md)：重要决策及其理由。
+- [Windows 桌面版](docs/desktop.md)：Electron 架构、安全边界、构建与数据迁移。
+- [桌面化交付报告](docs/desktop-delivery.md)：实际命令、验收状态与未验证项。
 - [场景尺度](docs/scene-scale.md)：世界与资源尺度约定。
+- [人物与动作](docs/character-animation-plan.md)：当前角色、动作和待验收事项。
+- [无头模型工具](docs/model-tools.md)：工具需求与规划；目前尚未实现。
 - [资源来源与许可](public/assets/SOURCES.md)：模型、贴图和图标的来源。
 - [开发约束](AGENTS.md)：修改范围、测试原则与交付要求。
 
-功能开发在独立分支进行，验收后再合并 `main`。依赖、构建产物、密钥和本地任务书不纳入仓库；游戏存档保存在当前浏览器中，换设备前请单独导出备份。
+功能开发在独立分支进行，验收后再合并 `main`。依赖、构建产物、密钥和本地任务书不纳入仓库；浏览器和桌面版分别保存本地存档，换设备前请单独导出备份。

@@ -1,8 +1,7 @@
 # 房地产首版 · 实施设计
 
-本文是 `docs/real-estate-task.md` 的实现设计（开发分支 `feature/real-estate`，起点 `0895cca`）。
-只描述**本首版**如何落地；规则正文在 `docs/architecture.md`、`docs/contracts.md`，
-决策理由在 `docs/decisions.md`。
+本文保留房地产参数及其设计依据；部分实施说明和版本迁移是历史背景。当前规则以
+`docs/architecture.md`、`docs/contracts.md`、`src/content/real-estate.ts` 和实际代码为准。
 
 ## 1. 模块与状态权威
 
