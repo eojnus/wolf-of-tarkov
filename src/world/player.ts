@@ -36,6 +36,17 @@ export interface PlayerUpdateResult {
   readonly speed: number;
 }
 
+/** 只读物理表现信息；不参与位移、碰撞或业务判断。 */
+export interface PlayerMotion {
+  readonly velocityX: number;
+  readonly velocityZ: number;
+  readonly sprinting: boolean;
+  readonly grounded: boolean;
+  readonly verticalVelocity: number;
+  readonly leftGround: boolean;
+  readonly touchedGround: boolean;
+}
+
 /**
  * 人物可移动的世界边界（米，世界坐标）。
  *
@@ -141,7 +152,8 @@ export class Player {
     this.posZ = pose.z;
     this.facingRad = pose.facing;
     this.applyTransform();
-    this.character?.update(0, false, 0, false);
+    // 读档/场景切换可能发生在空中或落地缓冲中：清掉不再有效的表现状态，回到待机。
+    this.character?.reset();
   }
 
   /**
@@ -153,9 +165,7 @@ export class Player {
     dtSeconds: number,
     authoritative: { readonly x: number; readonly y: number; readonly z: number },
     display: { readonly x: number; readonly y: number; readonly z: number },
-    velocityX: number,
-    velocityZ: number,
-    sprinting: boolean,
+    motion: PlayerMotion,
   ): PlayerUpdateResult {
     const distance = Math.hypot(display.x - this.posX, display.z - this.posZ);
     this.authX = authoritative.x;
@@ -165,16 +175,26 @@ export class Player {
     this.posY = display.y;
     this.posZ = display.z;
 
-    const speed = Math.hypot(velocityX, velocityZ);
+    const speed = Math.hypot(motion.velocityX, motion.velocityZ);
     const moved = speed > PHYSICS.character.minAnimationSpeed;
     if (dtSeconds > 0 && moved) {
-      const target = Math.atan2(velocityX, velocityZ);
+      const target = Math.atan2(motion.velocityX, motion.velocityZ);
       const k = 1 - Math.exp(-PLAYER.turnLambda * dtSeconds);
       this.facingRad = lerpAngle(this.facingRad, target, k);
     }
+    // 先写入 group 的朝向，CharacterRig 才能在本次 update 中用当前角色本地轴计算程序化动作；
+    // 反过来做会让转身后的一帧仍使用上一朝向的轴。
     this.applyTransform();
 
-    this.character?.update(dtSeconds, moved, speed, sprinting && moved);
+    this.character?.update(dtSeconds, {
+      speed,
+      moving: moved,
+      sprinting: motion.sprinting && moved,
+      grounded: motion.grounded,
+      verticalVelocity: motion.verticalVelocity,
+      leftGround: motion.leftGround,
+      touchedGround: motion.touchedGround,
+    });
     this.animatePlaceholder(dtSeconds, moved);
     return { moved, distance, speed };
   }
@@ -201,7 +221,10 @@ export class Player {
   }
 
   dispose(): void {
-    this.character?.dispose();
-    this.character = null;
+    if (this.character) {
+      this.group.remove(this.character.root);
+      this.character.dispose();
+      this.character = null;
+    }
   }
 }

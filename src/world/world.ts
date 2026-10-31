@@ -69,6 +69,7 @@ import { CityBlocks, type BlocksReport } from './blocks/scene';
 import { insideAnyRect, planCityBlocks, type Rect } from './blocks/plan';
 import { SceneryAssetLibrary } from './scenery/assets';
 import { PhysicsRuntime } from './physics';
+import type { PhysicsDebugSnapshot } from './physics';
 
 const MOVE_KEYS: Record<string, keyof MoveInput> = {
   KeyW: 'forward',
@@ -182,6 +183,13 @@ export interface WorldCallbacks {
   onCollisionReadyChange?(ready: boolean): void;
   /** Rapier/WASM 初始化失败；人物保持锁定，不能回退到第二套移动实现。 */
   onPhysicsError?(message: string): void;
+}
+
+/** World 只读物理调试快照；供开发工具调用，不暴露 Rapier 对象。 */
+export interface WorldPhysicsDebugSnapshot extends PhysicsDebugSnapshot {
+  readonly interiorMode: 'outdoor' | 'indoor';
+  readonly collisionReady: boolean;
+  readonly layoutRevision: number;
 }
 
 export interface FurnitureEditViewCallbacks {
@@ -669,6 +677,23 @@ export class World {
   isCollisionReady(): boolean {
     if (!this.physicsReady || this.physicsError !== null) return false;
     return this.interiorMode === 'indoor' ? true : this.collisionReady;
+  }
+
+  /**
+   * 只读开发接口：返回当前独立 World 的真实 Rapier Collider 快照。
+   * 物理未初始化、场景加载中或碰撞未就绪时明确抛错；绝不拿规划数据冒充。
+   * 不推进物理、不读写存档、不改变输入或场景状态。
+   */
+  capturePhysicsDebugSnapshot(): WorldPhysicsDebugSnapshot {
+    if (!this.physics) throw new Error('物理运行时尚未初始化，无法读取运行时碰撞体');
+    if (this.interiorMode === 'loading') throw new Error('场景正在切换，无法读取稳定的碰撞体快照');
+    if (!this.isCollisionReady()) throw new Error('碰撞尚未就绪，拒绝用规划数据冒充运行时快照');
+    return {
+      ...this.physics.captureDebugSnapshot(),
+      interiorMode: this.interiorMode,
+      collisionReady: this.isCollisionReady(),
+      layoutRevision: this.layoutRevision,
+    };
   }
 
   /**
@@ -1617,14 +1642,16 @@ export class World {
     const pose = this.player.pose();
     const physics = this.physics;
     if (!physics) {
-      return this.player.updateFromPhysics(
-        dtMoveSeconds,
-        pose,
-        this.player.displayPose(),
-        0,
-        0,
-        false,
-      );
+      return this.player.updateFromPhysics(dtMoveSeconds, pose, this.player.displayPose(), {
+        velocityX: 0,
+        velocityZ: 0,
+        sprinting: false,
+        // 没有物理运行时时人物本就锁定；保持待机，不把「无物理」误判成空中。
+        grounded: true,
+        verticalVelocity: 0,
+        leftGround: false,
+        touchedGround: false,
+      });
     }
 
     const dir = canMoveNow ? this.readMoveDirection() : { x: 0, z: 0 };
@@ -1654,9 +1681,15 @@ export class World {
       frozen ? 0 : dtMoveSeconds,
       result.authoritative,
       result.display,
-      result.velocityX,
-      result.velocityZ,
-      canMoveNow && this.sprinting,
+      {
+        velocityX: result.velocityX,
+        velocityZ: result.velocityZ,
+        sprinting: canMoveNow && this.sprinting,
+        grounded: result.grounded,
+        verticalVelocity: result.verticalVelocity,
+        leftGround: result.leftGround,
+        touchedGround: result.touchedGround,
+      },
     );
     if (this.interiorMode === 'outdoor') this.refreshNearbyBuilding();
     return playerResult;

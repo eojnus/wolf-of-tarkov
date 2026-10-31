@@ -313,24 +313,91 @@ export const PLAYER = {
   /** 转身平滑速率（1/秒）。 */
   turnLambda: 13,
   model: {
-    /** Quaternius「Ultimate Animated Characters」的休闲男性角色，CC0，单文件无外部纹理。 */
-    url: 'assets/models/character/Casual_Male.glb',
+    /**
+     * Alina Ip（Sketchfab / Jungle Jim，CC BY 4.0）的原始 USDZ。
+     *
+     * 回到旧 GLB 路线只需把 url 改成 `assets/models/character/Casual_Male.glb`，
+     * 并在 `clips` 里填回 Idle / Walk / Run 的名称；程序化动作只在对应片段为 null
+     * 且 `bones` 能全部解析时启用。
+     */
+    url: 'assets/models/character/Alina_Ip_Animated.usdz',
     /** 归一化后的身高（米），脚底贴地。 */
     height: 1.78,
     /** 模型自身朝向与 +Z 的偏差（弧度）。 */
     yawOffset: 0,
-    idleClip: 'Idle',
-    walkClip: 'Walk',
-    runClip: 'Run',
-    /** 行走动画的自然参考速度（米/秒），用于按实际速度匹配播放速率。 */
-    walkReferenceSpeed: 1.55,
-    /** 跑步动画的自然参考速度（米/秒）。 */
-    runReferenceSpeed: 3.1,
-    /** 待机与行走之间的交叉淡化时长（秒）。 */
+    /**
+     * 语义动作 → 源动画片段。`start` / `end`（秒）用于裁剪循环片段；
+     * 省略时整段使用。没有对应片段时，如果 `bones` 完整，则使用程序化表现。
+     */
+    clips: {
+      idle: { name: '_359960820992_TempMotion', start: 0, end: 1.5 },
+      walk: null,
+      run: null,
+      jumpStart: null,
+      airborne: null,
+      land: null,
+    },
+    /**
+     * 程序化动作的骨骼映射。名称来自当前模型；缺失任何一项都会关闭程序化动作并明确诊断。
+     * 当前映射对应 Alina 的 CC/DAZ 骨架（骨骼名为导出器生成的 n*）。
+     */
+    bones: {
+      pelvis: 'n35',
+      chest: 'n69',
+      leftHip: 'n37',
+      leftKnee: 'n38',
+      leftFoot: 'n41',
+      rightHip: 'n52',
+      rightKnee: 'n53',
+      rightFoot: 'n56',
+      leftShoulder: 'n84',
+      leftElbow: 'n85',
+      rightShoulder: 'n112',
+      rightElbow: 'n113',
+    },
+    /** 程序化步态参数；只影响表现，不参与物理位移。 */
+    gait: {
+      /** 一个完整步态周期（左右各一步）对应的前进距离（米），用于按实际速度调整步频。 */
+      walkStrideMeters: 2.8,
+      runStrideMeters: 4.2,
+      /** 回退到 GLB 片段动作时按实际速度匹配播放速率；程序化步态不使用。 */
+      walkReferenceSpeed: 1.55,
+      runReferenceSpeed: 3.1,
+      minCyclesPerSecond: 0.7,
+      maxCyclesPerSecond: 2.6,
+      walkHipDegrees: 24,
+      walkKneeDegrees: 32,
+      walkArmDegrees: 17,
+      walkElbowDegrees: 10,
+      walkLeanDegrees: 2,
+      runHipDegrees: 40,
+      runKneeDegrees: 66,
+      runArmDegrees: 34,
+      runElbowDegrees: 52,
+      runLeanDegrees: 8,
+    },
+    /** 程序化跳跃表现参数；不改变 PHYSICS 的跳跃高度或重力。 */
+    jump: {
+      /** 起跳动作持续到进入空中姿态的时间（秒）。 */
+      startSeconds: 0.12,
+      /** 落地缓冲持续到回到地面动作的时间（秒）。 */
+      landSeconds: 0.22,
+      crouchKneeDegrees: 58,
+      riseKneeDegrees: 68,
+      airHipDegrees: 32,
+      fallHipDegrees: 12,
+      armDegrees: 34,
+      leanDegrees: 7,
+    },
+    /** 待机与行走之间的交叉淡化时长（秒），也用于片段动作权重。 */
     fadeSeconds: 0.24,
     /** 播放速率上下限，避免极端速度导致动作失真。 */
     minTimeScale: 0.65,
     maxTimeScale: 2.0,
+    /** 程序化动作淡入/淡出时间常数（秒）。 */
+    proceduralBlendSeconds: 0.16,
+    /** 程序化目标姿态的平滑时间常数（秒）。 */
+    proceduralSmoothingSeconds: 0.06,
   },
 } as const;
 

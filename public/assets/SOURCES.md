@@ -52,6 +52,34 @@ Quaternius 角色模型；界面图标自 v0.3.4 起使用 Lucide。每一类资
 - 说明：这是**现代便装的人类角色**，有独立的待机与行走片段，不是用跑步动画替代行走。
   替换其他 glTF 只需修改 `src/content/config.ts#PLAYER.model`，业务逻辑不依赖模型文件名或节点名。
 - 已移除：v0.1/v0.2 曾使用的 `RobotExpressive.glb`（机器人外观），已从仓库删除。
+- 现状：当前玩家视觉模型已改为 Alina（见下一节）；本模型与许可说明保留，作为可回退的 GLB 路线。
+
+## Alina_Ip · 当前玩家角色（2026-10-31 接入）
+
+- 作品原名：**Alina Ip, realistic Asian woman (Animated)**
+- 作者：**Jungle Jim**（Sketchfab 账号 `@jungle_jim`）
+- 来源页：https://sketchfab.com/3d-models/alina-ip-realistic-asian-woman-animated-600d4d4aa71c4181b2567a3605ce8c57
+- 许可：**Creative Commons Attribution 4.0 International（CC BY 4.0）**
+  - 许可全文：https://creativecommons.org/licenses/by/4.0/
+  - 来源页在 2026-10-31 显示 “License: CC Attribution”，并链接到上述许可。
+- 本地文件：`models/character/Alina_Ip_Animated.usdz`（16,323,875 字节）
+  - SHA-256：`9EE66BE79042AA3FCF3C411A83325DCAEABA1638A47C4BD06EA50FCFDAE2DEB4`
+  - 与下载目录中的原始文件字节一致；**原始文件未修改**。
+- 署名要求（交付与分发时必须保留）：
+  - 作品名、作者 Jungle Jim、来源页链接、CC BY 4.0 许可链接；
+  - 说明本项目做了修改（见下）。
+- 本项目修改：
+  - 运行时按包围盒等比归一化到 1.78 m 身高并脚底贴地；
+  - 从原始 22.6 秒骨骼动画中取 0–1.5 秒作为待机循环，并移除骨骼根的位移/旋转轨道；
+  - 行走、奔跑、起跳、空中、落地使用程序化骨骼姿态（未改动原始 USDZ，未使用 Mixamo）；
+  - 未替换贴图或材质，未修改骨骼与蒙皮数据。
+- 用途：玩家第三人称视觉模型；不参与碰撞、位移、重力、跳跃或任何业务判定。
+- 许可范围说明：CC BY 4.0 允许复制、修改、再分发与商业使用，但必须署名并标明修改；
+  不包含商标、肖像或对作者的背书暗示。若后续改变用途或再分发派生资产，需继续保留上述署名。
+- **待核实（上游素材权利）**：来源页说明模型由 FaceGen Artist Pro、DAZ3D 与 Character Creator 4 制作；
+  上传者是否有权以 CC BY 4.0 再许可这些工具生成的基础网格/贴图，无法仅凭 Sketchfab 页面确认。
+  正式商业分发前建议由项目方复核上游 EULA；在核实前不要把本条目当作已完成全部权利尽调。
+- 本地许可说明：`models/character/LICENSE-Alina_Ip.md`
 
 ## Lucide · 界面图标（v0.3.4 引入）
 

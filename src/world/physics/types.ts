@@ -21,6 +21,39 @@ export interface PhysicsPose {
   z: number;
 }
 
+/** 只读的运行时碰撞体快照；所有字段都是可序列化副本。 */
+export interface PhysicsColliderSnapshot {
+  readonly handle: number;
+  readonly role: 'character' | 'static' | 'other';
+  readonly shape: string;
+  readonly position: PhysicsPose;
+  readonly rotation: {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+    readonly w: number;
+  };
+  readonly halfExtents: PhysicsPose | null;
+  readonly radius: number | null;
+  readonly halfHeight: number | null;
+}
+
+/** 物理运行时的只读快照；不暴露 Rapier 对象。 */
+export interface PhysicsDebugSnapshot {
+  readonly colliders: readonly PhysicsColliderSnapshot[];
+  readonly characterHandle: number;
+  readonly characterFootPosition: PhysicsPose;
+  readonly grounded: boolean;
+  readonly bounds: PhysicsBounds;
+  readonly edgeMargin: number;
+  readonly counts: {
+    readonly bodies: number;
+    readonly colliders: number;
+    readonly staticBodies: number;
+  };
+}
+
+
 export interface PhysicsStepInput {
   /** 期望水平速度（米/秒），已经包含疾跑与生存倍率。 */
   readonly velocityX: number;
@@ -42,6 +75,18 @@ export interface PhysicsStepResult {
   readonly velocityX: number;
   readonly velocityZ: number;
   readonly grounded: boolean;
+  /**
+   * 帧末竖直速度（米/秒，向上为正）。只供表现区分起跳、上升与下落；
+   * 无新物理步时保留上一样本，不参与物理或业务判定。
+   */
+  readonly verticalVelocity: number;
+  /**
+   * 本帧至少一个物理步从接地变为离地（成功起跳或走出边缘）。
+   * 逐物理步累计，不能只看帧末 grounded，否则同帧多个步会漏掉变化。
+   */
+  readonly leftGround: boolean;
+  /** 本帧至少一个物理步从离地变为接地。 */
+  readonly touchedGround: boolean;
   readonly steps: number;
   /** 本帧是否已经处理（或丢弃）跳跃请求；World 据此清掉一次性输入。 */
   readonly jumpHandled: boolean;

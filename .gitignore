@@ -1,5 +1,6 @@
 node_modules/
 dist/
+release/
 .DS_Store
 *.local
 .vite/
@@ -13,3 +14,6 @@ src/features/population/sed5H9Nog
 # Local planning and agent briefs
 /docs/ui-design.md
 /docs/real-estate-task.md
+
+# 无头模型工具的独立构建产物（不进入游戏包）
+/tools/model-tool/.build/

@@ -1,14 +1,22 @@
 {
   "name": "city-wealth-sim",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.3",
   "type": "module",
-  "description": "现代城市财富模拟游戏 - 首版最小基线",
+  "description": "塔科夫之狼：现代城市财富模拟（Windows 桌面版）",
+  "productName": "塔科夫之狼",
+  "author": "Wolf of Tarkov Project",
+  "main": "desktop/main.cjs",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "model-tool:build": "vite build --config tools/model-tool/vite.config.mjs",
+    "desktop:dev": "node scripts/electron-dev.mjs",
+    "desktop:start": "electron .",
+    "desktop:pack": "npm run build && electron-builder --win dir",
+    "desktop:build": "npm run build && electron-builder --win nsis"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",
@@ -16,6 +24,8 @@
   },
   "devDependencies": {
     "@types/three": "^0.186.0",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
     "typescript": "^5.9.3",
     "vite": "^8.3.5"
   }

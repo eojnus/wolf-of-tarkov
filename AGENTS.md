@@ -5,9 +5,11 @@
 
 本文件约束所有参与本项目的实现者（含 AI 助手）。项目为《塔科夫之狼》，城市为塔科夫市。
 
-## 无头模型工具（规划中）
+## 无头模型工具
 
-`tools/model-tool/` 当前只有架构占位，尚无可用命令。需求和讨论见 `docs/model-tools.md`，架构与接口见 `docs/model-tool-architecture.md`，实施分工见 `docs/model-tool-work-packages.md`；不要把占位文件当作已实现功能。工具可用后以其 README 与实际能力清单为准。
+`tools/model-tool/` 已可用。先看 `node tools/model-tool/cli.mjs capabilities` 的能力矩阵，快速开始、结果状态（`ok`/`partial`/`error`）、实测范围与限制见 `tools/model-tool/README.md`；命令契约见 `docs/model-tool-architecture.md`，需求讨论见 `docs/model-tools.md`，分工见 `docs/model-tool-work-packages.md`。首次使用前构建工具渲染页：`npm run model-tool:build`。
+
+每次执行（除 `capabilities` 与 `--help`）会启动一个独立 Electron 渲染进程，计入当次渲染预算；它不启动也不结束游戏进程，不读写玩家存档与 `src/**`。USDZ 只读、未实现写回；`snapshot` 只采样资产内片段，不代表游戏内程序化动作，也不代表性能或手感验收。
 
 ## 角色
 

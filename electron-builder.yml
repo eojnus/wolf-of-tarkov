@@ -1,0 +1,37 @@
+appId: com.wolfoftarkov.desktop
+productName: 塔科夫之狼
+executableName: WolfOfTarkov
+copyright: Copyright © 2026 Wolf of Tarkov Project
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - package.json
+  - dist/**/*
+  - desktop/**/*
+  - build/icon.png
+  - "!node_modules/**/*"
+
+asar: true
+npmRebuild: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.png
+  artifactName: WolfOfTarkov-Setup-${version}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 塔科夫之狼
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true

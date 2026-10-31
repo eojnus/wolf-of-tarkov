@@ -52,6 +52,7 @@ import { buildViewModel } from './view';
 import { FurnitureCommands } from './furniture';
 import { FurniturePanel } from '../ui/furniture-panel';
 import type { FurnitureEditCommit } from '../world/interiors/furniture-editor';
+import { registerDesktopCloseHandler } from '../platform/desktop';
 
 export interface GameElements {
   readonly viewport: HTMLElement;
@@ -89,6 +90,8 @@ export class Game {
   private hudTimerMs = 0;
   private rafId = 0;
   private autosaveChain: Promise<void> = Promise.resolve();
+  /** 已启动且尚未完成的存档写入（自动 + 手动）；关闭窗口时等待它们结束。 */
+  private readonly pendingSaves = new Set<Promise<void>>();
   private started = false;
   private pauseOpenedAt = 0;
   /** 当前合法商店交互上下文：只在通过建筑交互打开便利店时存在；不持久化。 */
@@ -366,6 +369,9 @@ export class Game {
     this.syncClockUi();
     this.syncPanelPresentation();
     this.hud.setSaveState('', 'idle');
+
+    // 桌面版关闭窗口前等待所有已启动的存档写入；浏览器中该调用不产生任何行为。
+    registerDesktopCloseHandler(() => this.waitForPendingSaves());
   }
 
   /* ------------------------------------------------------------ 生命周期 */
@@ -1290,11 +1296,37 @@ export class Game {
       .catch(() => {
         /* 失败已在 performSave 内提示 */
       });
+    this.trackSave(this.autosaveChain);
   }
 
-  private async saveToSlot(slot: SaveSlot): Promise<void> {
-    await this.autosaveChain;
-    await this.performSave(slot, false);
+  private saveToSlot(slot: SaveSlot): Promise<void> {
+    // 从调用时刻就纳入关闭等待：既覆盖等待已有自动保存的阶段，也覆盖真正的手动写入。
+    const task = this.autosaveChain.then(() => this.performSave(slot, false));
+    return this.trackSave(task);
+  }
+
+  private trackSave(task: Promise<void>): Promise<void> {
+    let tracked: Promise<void>;
+    tracked = task.then(
+      () => {
+        this.pendingSaves.delete(tracked);
+      },
+      () => {
+        this.pendingSaves.delete(tracked);
+      },
+    );
+    this.pendingSaves.add(tracked);
+    return tracked;
+  }
+
+  /**
+   * 等待当前所有存档写入结束；循环重查集合，等待期间新启动的写入也会被纳入。
+   * 单项写入失败由 performSave 自行提示，这里不使用 Promise.all（避免一个失败提前结束等待）。
+   */
+  private async waitForPendingSaves(): Promise<void> {
+    while (this.pendingSaves.size > 0) {
+      await Promise.allSettled([...this.pendingSaves]);
+    }
   }
 
   private async performSave(slot: SaveSlot, silent: boolean): Promise<void> {

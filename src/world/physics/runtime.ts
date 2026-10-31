@@ -16,6 +16,8 @@ import { floorBox, withGround } from './collision';
 import type {
   PhysicsBounds,
   PhysicsBox,
+  PhysicsColliderSnapshot,
+  PhysicsDebugSnapshot,
   PhysicsPose,
   PhysicsStepInput,
   PhysicsStepResult,
@@ -47,6 +49,94 @@ function interpolatePose(a: PhysicsPose, b: PhysicsPose, t: number): PhysicsPose
     y: a.y + (b.y - a.y) * alpha,
     z: a.z + (b.z - a.z) * alpha,
   };
+}
+
+function colliderShapeName(shapeType: RAPIER.ShapeType): string {
+  switch (shapeType) {
+    case RAPIER.ShapeType.Ball:
+      return 'ball';
+    case RAPIER.ShapeType.Cuboid:
+      return 'cuboid';
+    case RAPIER.ShapeType.Capsule:
+      return 'capsule';
+    case RAPIER.ShapeType.Segment:
+      return 'segment';
+    case RAPIER.ShapeType.Polyline:
+      return 'polyline';
+    case RAPIER.ShapeType.Triangle:
+      return 'triangle';
+    case RAPIER.ShapeType.TriMesh:
+      return 'trimesh';
+    case RAPIER.ShapeType.HeightField:
+      return 'heightfield';
+    case RAPIER.ShapeType.Compound:
+      return 'compound';
+    case RAPIER.ShapeType.ConvexPolyhedron:
+      return 'convex-polyhedron';
+    case RAPIER.ShapeType.Cylinder:
+      return 'cylinder';
+    case RAPIER.ShapeType.Cone:
+      return 'cone';
+    case RAPIER.ShapeType.RoundCuboid:
+      return 'round-cuboid';
+    case RAPIER.ShapeType.RoundTriangle:
+      return 'round-triangle';
+    case RAPIER.ShapeType.RoundCylinder:
+      return 'round-cylinder';
+    case RAPIER.ShapeType.RoundCone:
+      return 'round-cone';
+    case RAPIER.ShapeType.RoundConvexPolyhedron:
+      return 'round-convex-polyhedron';
+    case RAPIER.ShapeType.HalfSpace:
+      return 'half-space';
+    case RAPIER.ShapeType.Voxels:
+      return 'voxels';
+    default:
+      return `unknown(${String(shapeType)})`;
+  }
+}
+
+function colliderDimensions(shape: RAPIER.Shape): {
+  halfExtents: PhysicsPose | null;
+  radius: number | null;
+  halfHeight: number | null;
+} {
+  switch (shape.type) {
+    case RAPIER.ShapeType.Cuboid: {
+      const cuboid = shape as RAPIER.Cuboid;
+      return {
+        halfExtents: { x: cuboid.halfExtents.x, y: cuboid.halfExtents.y, z: cuboid.halfExtents.z },
+        radius: null,
+        halfHeight: null,
+      };
+    }
+    case RAPIER.ShapeType.RoundCuboid: {
+      const cuboid = shape as RAPIER.RoundCuboid;
+      return {
+        halfExtents: { x: cuboid.halfExtents.x, y: cuboid.halfExtents.y, z: cuboid.halfExtents.z },
+        radius: cuboid.borderRadius,
+        halfHeight: null,
+      };
+    }
+    case RAPIER.ShapeType.Ball:
+      return { halfExtents: null, radius: (shape as RAPIER.Ball).radius, halfHeight: null };
+    case RAPIER.ShapeType.Capsule: {
+      const capsule = shape as RAPIER.Capsule;
+      return { halfExtents: null, radius: capsule.radius, halfHeight: capsule.halfHeight };
+    }
+    case RAPIER.ShapeType.Cylinder:
+    case RAPIER.ShapeType.RoundCylinder: {
+      const cylinder = shape as RAPIER.Cylinder | RAPIER.RoundCylinder;
+      return { halfExtents: null, radius: cylinder.radius, halfHeight: cylinder.halfHeight };
+    }
+    case RAPIER.ShapeType.Cone:
+    case RAPIER.ShapeType.RoundCone: {
+      const cone = shape as RAPIER.Cone | RAPIER.RoundCone;
+      return { halfExtents: null, radius: cone.radius, halfHeight: cone.halfHeight };
+    }
+    default:
+      return { halfExtents: null, radius: null, halfHeight: null };
+  }
 }
 
 export class PhysicsRuntime {
@@ -237,6 +327,49 @@ export class PhysicsRuntime {
   }
 
   /**
+   * 只读调试快照：枚举当前 Rapier World 的实际 Collider，返回可序列化副本。
+   * 不推进物理、不创建/删除/移动对象，也不暴露 Rapier 句柄对象。
+   * 未知形状保留类型与变换，尺寸写 null；不把包围盒冒充原形状。
+   */
+  captureDebugSnapshot(): PhysicsDebugSnapshot {
+    const colliders: PhysicsColliderSnapshot[] = [];
+    this.world.forEachCollider((collider) => {
+      const shape = collider.shape;
+      const parent = collider.parent();
+      const role: PhysicsColliderSnapshot['role'] =
+        collider.handle === this.collider.handle
+          ? 'character'
+          : parent?.isFixed()
+            ? 'static'
+            : 'other';
+      const translation = collider.translation();
+      const rotation = collider.rotation();
+      const dimensions = colliderDimensions(shape);
+      colliders.push({
+        handle: collider.handle,
+        role,
+        shape: colliderShapeName(shape.type),
+        position: { x: translation.x, y: translation.y, z: translation.z },
+        rotation: { x: rotation.x, y: rotation.y, z: rotation.z, w: rotation.w },
+        halfExtents: dimensions.halfExtents,
+        radius: dimensions.radius,
+        halfHeight: dimensions.halfHeight,
+      });
+    });
+
+    const foot = this.pose;
+    return {
+      colliders,
+      characterHandle: this.collider.handle,
+      characterFootPosition: { ...foot },
+      grounded: this.grounded,
+      bounds: { ...this.bounds },
+      edgeMargin: this.edgeMargin,
+      counts: this.debugCounts(),
+    };
+  }
+
+  /**
    * 地面/低矮实体顶部恢复高度。候选必须同时通过身体空间和实际支撑查询。
    * 没有合法候选时返回 null，不能把实体内部的 y=0 当成安全落点。
    */
@@ -301,6 +434,9 @@ export class PhysicsRuntime {
         velocityX: 0,
         velocityZ: 0,
         grounded: this.grounded,
+        verticalVelocity: this.verticalVelocity,
+        leftGround: false,
+        touchedGround: false,
         steps: 0,
         jumpHandled: true,
       };
@@ -313,14 +449,22 @@ export class PhysicsRuntime {
 
     let steps = 0;
     let jumpHandled = false;
+    let leftGround = false;
+    let touchedGround = false;
 
     while (this.accumulator + 1e-9 >= PHYSICS.fixedStepSeconds) {
       const beforeStep = this.body.translation();
+      const wasGrounded = this.grounded;
       const stepInput: PhysicsStepInput = {
         ...input,
         jump: input.jump && !jumpHandled,
       };
       this.stepOnce(PHYSICS.fixedStepSeconds, stepInput);
+      // 逐物理步累计接地变化：同一渲染帧内多个步的起跳/落地都不能被最终状态覆盖。
+      if (wasGrounded !== this.grounded) {
+        if (this.grounded) touchedGround = true;
+        else leftGround = true;
+      }
       const afterStep = this.body.translation();
       this.velocityX = (afterStep.x - beforeStep.x) / PHYSICS.fixedStepSeconds;
       this.velocityZ = (afterStep.z - beforeStep.z) / PHYSICS.fixedStepSeconds;
@@ -342,6 +486,9 @@ export class PhysicsRuntime {
       velocityX: input.allowInput ? this.velocityX : 0,
       velocityZ: input.allowInput ? this.velocityZ : 0,
       grounded: this.grounded,
+      verticalVelocity: this.verticalVelocity,
+      leftGround,
+      touchedGround,
       steps,
       jumpHandled: jumpHandled || input.frozen,
     };
