@@ -128,6 +128,85 @@ export function unknownDeclared(reason: string): DeclaredResourceSummary {
   return unavailableDeclared([reason]);
 }
 
+interface GltfJsonLike {
+  readonly images?: unknown;
+  readonly textures?: unknown;
+  readonly materials?: unknown;
+  readonly buffers?: unknown;
+  readonly animations?: unknown;
+}
+
+/**
+ * 从已加载的 glTF JSON（GLTFLoader 的 parser.json）统计「文件声明」。
+ *
+ * 只描述声明，不判断可解码：bufferView 边界在 GLB 路径由 CLI 的头解析补充，
+ * .gltf 的外部文件由实际加载请求验证。
+ */
+export function declaredFromGltfJson(
+  json: unknown,
+  source: 'glb-json' | 'gltf-json',
+): DeclaredResourceSummary {
+  if (!json || typeof json !== 'object') {
+    return unknownDeclared('渲染页拿不到 glTF JSON，声明资源未知');
+  }
+  const data = json as GltfJsonLike;
+  const images = Array.isArray(data.images) ? data.images : [];
+  const countOf = (value: unknown): number => (Array.isArray(value) ? value.length : 0);
+
+  let imagesEmbedded = 0;
+  let imagesDataUri = 0;
+  let imagesExternal = 0;
+  let imagesLocalFile = 0;
+  let imagesWithoutSource = 0;
+  const mimeTypes: Record<string, number> = {};
+
+  for (const entry of images) {
+    const image = (entry ?? {}) as { uri?: unknown; mimeType?: unknown; bufferView?: unknown };
+    if (typeof image.mimeType === 'string' && image.mimeType !== '') {
+      mimeTypes[image.mimeType] = (mimeTypes[image.mimeType] ?? 0) + 1;
+    }
+    if (Number.isInteger(image.bufferView)) imagesEmbedded += 1;
+    else if (typeof image.uri === 'string') {
+      if (/^data:/i.test(image.uri)) imagesDataUri += 1;
+      else if (/^https?:/i.test(image.uri) || image.uri.startsWith('//')) imagesExternal += 1;
+      else imagesLocalFile += 1;
+    } else imagesWithoutSource += 1;
+  }
+
+  return {
+    source,
+    images: images.length,
+    textures: countOf(data.textures),
+    materials: countOf(data.materials),
+    buffers: countOf(data.buffers),
+    animations: countOf(data.animations),
+    imagesEmbedded,
+    imagesDataUri,
+    imagesExternal,
+    imagesLocalFile,
+    imagesWithoutSource,
+    // JSON 本身不含 BIN 边界；GLB 路径由 CLI 的 lib/glb.mjs 补充。
+    invalidBufferViews: null,
+    mimeTypes: Object.keys(mimeTypes).length > 0 ? mimeTypes : null,
+    notes: [
+      source === 'glb-json'
+        ? '声明数量来自加载后的 glTF JSON（GLB 的 bufferView 边界由 CLI 头解析另行补充）'
+        : '声明数量来自 .gltf JSON；同目录外部文件以实际加载请求结果为准',
+    ],
+  };
+}
+
+/** 任务侧选择清单来源：GLB 优先用 CLI 的完整摘要，USDZ 保持 unavailable。 */
+export function resolveDeclared(
+  format: 'glb' | 'gltf' | 'usdz',
+  fromRequest: DeclaredResourceSummary | null | undefined,
+  fromAsset: DeclaredResourceSummary,
+): DeclaredResourceSummary {
+  if (format === 'usdz') return unknownDeclared('USDZ 未逐项枚举资源，声明数量为 unknown');
+  if (format === 'glb' && fromRequest) return fromRequest;
+  return fromAsset;
+}
+
 export function accountResources(
   loads: AssetLoadRecord,
   declared: DeclaredResourceSummary | null,
@@ -163,9 +242,6 @@ export function accountResources(
     }
     if ((manifest.imagesExternal ?? 0) > 0) {
       unknown.push(`${manifest.imagesExternal} 张声明图片指向远程 URL，工具不下载，未验证`);
-    }
-    if ((manifest.imagesLocalFile ?? 0) > 0) {
-      unknown.push(`${manifest.imagesLocalFile} 张声明图片引用外部文件，结果取决于同目录依赖`);
     }
     if (notAttemptedImages !== null && notAttemptedImages > 0) {
       unknown.push(`${notAttemptedImages} 张声明图片没有出现在加载请求中（可能未被材质引用）`);
@@ -211,6 +287,7 @@ export function accountResources(
       'declared.images / declared.textures 分别是 glTF JSON images / textures 数组长度；一张图片可被多个纹理、多个材质槽位引用，不一一对应',
       'runtime.textureObjects 是材质实际引用的不同 THREE.Texture 对象数；materialTextureSlots 是槽位引用次数，会重复计数',
       'runtime.textureLoadFailures 只统计本次真正发出并失败的图片请求；按 URL 的类型与扩展名分类，未知类型归为 other',
+      '引用同目录外部文件的图片以实际加载请求为准：文件缺失或无法解码会进入 failures，不会因为「声明了外部文件」就自动标为 unknown',
       'blob: URL 是临时地址，无法可靠回指到具体图片索引或名称；data: 样例省略内联内容',
       'null 表示无法确认，不是 0；不要用本报告的 null 推断「模型没有贴图」',
     ],

@@ -88,6 +88,17 @@ function cspDiagnostics(): Diagnostic[] {
   ];
 }
 
+/**
+ * `securitypolicyviolation` 由浏览器异步派发，可能在任务 Promise 结束后的下一个任务才到达。
+ * 提交结果前等一个宏任务再收集，避免最后一批拦截被漏掉（CSP 负例实测需要这一步）。
+ */
+async function drainCspDiagnostics(): Promise<Diagnostic[]> {
+  await new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
+  return cspDiagnostics();
+}
+
 function parseRequest(): ToolRequest {
   const raw = new URLSearchParams(window.location.search).get('request');
   if (!raw) throw new TaskError('REQUEST_MISSING', '渲染页没有收到请求', 2);
@@ -250,7 +261,7 @@ async function runTask(request: ToolRequest): Promise<{
   }
 
   // CSP 拦截属于资源不完整，必须在判定 status 之前并入诊断。
-  for (const item of cspDiagnostics()) diagnostics.push(item);
+  for (const item of await drainCspDiagnostics()) diagnostics.push(item);
 
   const hasError = diagnostics.some((item) => item.severity === 'error');
   const taskPartial = output?.status === 'partial';
@@ -325,8 +336,12 @@ async function main(): Promise<void> {
     const result = await runTask(request);
     await bridge.submit(result);
   } catch (error) {
+    const payload = errorPayload(error);
+    // 错误结果同样保留已观察到的 CSP 拦截，不把被策略拒绝的资源说成普通失败。
+    const csp = await drainCspDiagnostics();
+    payload.diagnostics.push(...csp);
     await bridge.submit({
-      ...errorPayload(error),
+      ...payload,
       metadata: { command: request?.command ?? null },
     });
   }

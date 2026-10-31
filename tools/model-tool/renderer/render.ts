@@ -11,7 +11,7 @@ import {
   type TaskTools,
   type ToolRequest,
 } from './api';
-import { accountResources, unknownDeclared } from './resources';
+import { accountResources, resolveDeclared } from './resources';
 
 function numArg(value: unknown, fallback: number): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -101,15 +101,7 @@ export const snapshotTask: Task = async (tools: TaskTools, request: ToolRequest)
 
   const stats = inspectSubtree(asset.root);
   const usage = textureUsageOf(asset.root);
-  const declared =
-    asset.format === 'glb'
-      ? (request.declaredResources ??
-        unknownDeclared('CLI 未能解析 GLB JSON chunk，声明资源数量为 unknown'))
-      : unknownDeclared(
-          asset.format === 'gltf'
-            ? 'snapshot 不解析 .gltf JSON；声明资源请用 inspect 查看'
-            : 'USDZ 未逐项枚举资源，声明数量为 unknown',
-        );
+  const declared = resolveDeclared(asset.format, request.declaredResources, asset.declared);
   const account = accountResources(asset.loads, declared, usage);
 
   /**

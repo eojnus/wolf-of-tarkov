@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { World, type WorldPhysicsDebugSnapshot } from '../../../src/world/world';
+import { PhysicsRuntime } from '../../../src/world/physics/runtime';
 import type { PhysicsColliderSnapshot } from '../../../src/world/physics/types';
 import {
   frameCamera,
@@ -15,6 +16,8 @@ import {
   TaskError,
   type Task,
   type TaskOutput,
+  type TaskTools,
+  type ToolRequest,
 } from '../renderer/api';
 
 const DEFAULT_WIDTH = 1280;
@@ -167,7 +170,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
   });
 }
 
-function addColliderVisual(
+export function addColliderVisual(
   scene: THREE.Scene,
   collider: PhysicsColliderSnapshot,
 ): { box: THREE.Box3 | null; rendered: boolean; renderedAs: 'box' | 'rounded-box' | 'capsule' | null } {
@@ -283,7 +286,247 @@ async function waitReady(world: World, physicsFailure: Promise<never>, scene: st
   }
 }
 
+/* --------------------------------------------------- 隔离物理自检（--self-check） */
+
+const SELF_CHECK_ROUND = {
+  halfX: 0.8,
+  halfY: 0.5,
+  halfZ: 0.55,
+  border: 0.16,
+  translation: { x: 0, y: 1.05, z: 0 },
+} as const;
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function nearlyEqualPose(
+  a: { x: number; y: number; z: number },
+  b: { x: number; y: number; z: number },
+): boolean {
+  return (
+    Math.abs(a.x - b.x) < 1e-6 &&
+    Math.abs(a.y - b.y) < 1e-6 &&
+    Math.abs(a.z - b.z) < 1e-6
+  );
+}
+
+/**
+ * 隔离物理自检。只用于验证快照契约，不进入游戏世界：
+ *  - 在工具进程单独的 PhysicsRuntime 里加一个真实 Rapier RoundCuboid；
+ *  - 用公开的 captureDebugSnapshot() 读取（不复制快照转换逻辑）；
+ *  - 用 runtime-collision 的真实绘制函数出图；
+ *  - 检查副本隔离、不推进物理。
+ *
+ * 私有 world 的访问只存在于这段测试辅助代码，不向游戏公开可写 World。
+ */
+async function runPhysicsSelfCheck(
+  tools: TaskTools,
+  request: ToolRequest,
+): Promise<TaskOutput> {
+  const width = dimensionArg(request.args.width, DEFAULT_WIDTH, 'width');
+  const height = dimensionArg(request.args.height, DEFAULT_HEIGHT, 'height');
+  const config = SELF_CHECK_ROUND;
+  const expectedSize = {
+    x: 2 * (config.halfX + config.border),
+    y: 2 * (config.halfY + config.border),
+    z: 2 * (config.halfZ + config.border),
+  };
+
+  const runtime = await PhysicsRuntime.create({ x: 0, y: 0, z: 0 }, 0.3);
+  try {
+    const world = (runtime as unknown as { world: RAPIER.World }).world;
+    const stepCalls = { count: 0 };
+    const originalStep = world.step.bind(world);
+    (world as unknown as { step: () => void }).step = () => {
+      stepCalls.count += 1;
+      originalStep();
+    };
+
+    const countsBeforeAdd = runtime.debugCounts();
+    const body = world.createRigidBody(
+      RAPIER.RigidBodyDesc.fixed().setTranslation(
+        config.translation.x,
+        config.translation.y,
+        config.translation.z,
+      ),
+    );
+    world.createCollider(
+      RAPIER.ColliderDesc.roundCuboid(config.halfX, config.halfY, config.halfZ, config.border),
+      body,
+    );
+    const countsAfterAdd = runtime.debugCounts();
+
+    const stepsBeforeCapture = stepCalls.count;
+    const first = runtime.captureDebugSnapshot();
+    const second = runtime.captureDebugSnapshot();
+    const stepsAfterCapture = stepCalls.count;
+    const firstBeforeMutation = stableJson(first);
+    const secondBeforeMutation = stableJson(second);
+
+    const roundCollider = second.colliders.find((item) => item.shape === 'round-cuboid');
+    if (!roundCollider) {
+      throw new TaskError('SELF_CHECK_COLLIDER_MISSING', '隔离世界快照里找不到 round-cuboid', 5, {
+        shapes: [...new Set(second.colliders.map((item) => item.shape))],
+      });
+    }
+
+    // 故意修改第一次返回值里的嵌套对象（只动副本对象）。
+    const mutableFirst = first as unknown as {
+      colliders: Array<{
+        handle: number;
+        position: { x: number; y: number; z: number };
+        rotation: { x: number; y: number; z: number; w: number };
+        halfExtents: { x: number; y: number; z: number } | null;
+      }>;
+      characterFootPosition: { x: number; y: number; z: number };
+    };
+    const firstRound =
+      mutableFirst.colliders.find((item) => item.handle === roundCollider.handle) ??
+      mutableFirst.colliders[0];
+    const mutated = {
+      position: { ...firstRound.position },
+      rotation: { ...firstRound.rotation },
+      halfExtents: firstRound.halfExtents ? { ...firstRound.halfExtents } : null,
+      foot: { ...mutableFirst.characterFootPosition },
+    };
+    firstRound.position.x += 999;
+    firstRound.rotation.w = 0;
+    if (firstRound.halfExtents) firstRound.halfExtents.y += 999;
+    mutableFirst.characterFootPosition.x += 999;
+
+    const third = runtime.captureDebugSnapshot();
+    const stepsAfterThird = stepCalls.count;
+
+    let actualTranslation: { x: number; y: number; z: number } | null = null;
+    world.forEachCollider((collider) => {
+      if (collider.handle === roundCollider.handle) {
+        const translation = collider.translation();
+        actualTranslation = { x: translation.x, y: translation.y, z: translation.z };
+      }
+    });
+
+    const checks = {
+      twoCapturesEqual: firstBeforeMutation === secondBeforeMutation,
+      mutationIsolated: secondBeforeMutation === stableJson(third),
+      actualColliderUnchanged:
+        actualTranslation !== null && nearlyEqualPose(actualTranslation, roundCollider.position),
+      noStepDuringCapture:
+        stepsAfterCapture === stepsBeforeCapture && stepsAfterThird === stepsAfterCapture,
+    };
+
+    const frame = await tools.frame(width, height);
+    frame.setBackground(0x101418);
+    frame.useDefaultLights();
+    const visual = addColliderVisual(frame.scene, roundCollider);
+    const visualSize = visual.box
+      ? visual.box.getSize(new THREE.Vector3())
+      : null;
+    const visualSizeMatches =
+      visualSize !== null &&
+      Math.abs(visualSize.x - expectedSize.x) < 1e-4 &&
+      Math.abs(visualSize.y - expectedSize.y) < 1e-4 &&
+      Math.abs(visualSize.z - expectedSize.z) < 1e-4;
+    const framingBox = visual.box ?? new THREE.Box3(
+      new THREE.Vector3(-1, 0, -1),
+      new THREE.Vector3(1, 1, 1),
+    );
+    frameCamera(frame.camera, framingBox, 35, 24, 1.06);
+    const png = await tools.writePng(
+      'runtime-collision-selfcheck-round-cuboid.png',
+      await frame.capture(),
+    );
+
+    const partialReasons: string[] = [];
+    if (!visual.rendered) partialReasons.push('RoundCuboid 没有被绘制');
+    if (visual.renderedAs !== 'rounded-box') partialReasons.push('绘制方式不是 rounded-box');
+    if (!visualSizeMatches) partialReasons.push('绘制盒外尺寸与 Rapier 半尺寸 + 圆角半径不一致');
+    if (!checks.twoCapturesEqual) partialReasons.push('连续两次快照不一致');
+    if (!checks.mutationIsolated) partialReasons.push('修改第一次快照副本影响了后续快照');
+    if (!checks.actualColliderUnchanged) partialReasons.push('快照副本与运行时真实 Collider 不一致');
+    if (!checks.noStepDuringCapture) partialReasons.push('capture 期间发生了物理 step');
+
+    tools.info('PHYSICS_SELF_CHECK', '隔离物理自检完成', {
+      renderedAs: visual.renderedAs,
+      checks,
+      partialReasons,
+    });
+
+    return {
+      status: partialReasons.length > 0 ? 'partial' : 'ok',
+      data: {
+        snapshotKind: 'physics-runtime-selfcheck',
+        source: 'PhysicsRuntime/Rapier (isolated)',
+        toolVersion: request.toolVersion ?? null,
+        threeRevision: THREE.REVISION,
+        rapierVersion: RAPIER.version(),
+        roundCuboid: {
+          shape: roundCollider.shape,
+          handle: roundCollider.handle,
+          role: roundCollider.role,
+          position: roundedPose(roundCollider.position),
+          rotation: roundCollider.rotation,
+          halfExtents: roundCollider.halfExtents,
+          radius: roundCollider.radius,
+          expectedVisualSize: {
+            x: round(expectedSize.x, 6),
+            y: round(expectedSize.y, 6),
+            z: round(expectedSize.z, 6),
+          },
+          visualSize: visualSize
+            ? {
+                x: round(visualSize.x, 6),
+                y: round(visualSize.y, 6),
+                z: round(visualSize.z, 6),
+              }
+            : null,
+          visualSizeMatchesRapier: visualSizeMatches,
+          rendered: visual.rendered,
+          renderedAs: visual.renderedAs,
+        },
+        snapshotIsolation: {
+          captureCalls: 3,
+          colliderCountBeforeAdd: countsBeforeAdd.colliders,
+          colliderCountAfterAdd: countsAfterAdd.colliders,
+          bodyCountBeforeAdd: countsBeforeAdd.bodies,
+          bodyCountAfterAdd: countsAfterAdd.bodies,
+          stepCallsDuringCaptures: stepsAfterThird - stepsBeforeCapture,
+          checks,
+          mutatedCopyFields: {
+            position: mutated.position,
+            rotation: mutated.rotation,
+            halfExtents: mutated.halfExtents,
+            characterFootPosition: mutated.foot,
+          },
+          note:
+            '自检在工具进程内单独的 PhysicsRuntime 中运行；没有 step 推进、没有玩家会话、没有读写存档。' +
+            'checks 只覆盖本次字段与调用，不构成对所有物理状态的绝对保证。',
+        },
+        character: {
+          handle: second.characterHandle,
+          footPosition: roundedPose(second.characterFootPosition),
+          grounded: second.grounded,
+          counts: second.counts,
+        },
+        screenshot: png,
+        partialReasons,
+        limitations: [
+          '自检世界是工具进程内单独创建的，不是正式游戏地图或玩家会话。',
+          'RoundCuboid 由测试辅助代码加入隔离世界；正式 World 仍只创建静态盒与人物胶囊。',
+          '只验证 RoundCuboid 的读取/绘制和快照副本语义，不证明所有 Rapier 形状或所有物理状态。',
+          '私有 world 访问仅存在于本自检代码，不向游戏公开可写 World。',
+        ],
+      },
+    };
+  } finally {
+    runtime.dispose();
+  }
+}
+
 export const runtimeCollisionTask: Task = async (tools, request): Promise<TaskOutput> => {
+  if (request.args.selfCheck === true) {
+    return runPhysicsSelfCheck(tools, request);
+  }
   const scene = sceneArg(request.args.scene);
   const width = dimensionArg(request.args.width, DEFAULT_WIDTH, 'width');
   const height = dimensionArg(request.args.height, DEFAULT_HEIGHT, 'height');

@@ -8,12 +8,11 @@ import {
   inspectSubtree,
   round,
   textureUsageOf,
-  type DeclaredResourceSummary,
   type Task,
   type TaskTools,
   type ToolRequest,
 } from './api';
-import { accountResources, unknownDeclared } from './resources';
+import { accountResources, resolveDeclared } from './resources';
 
 interface MaterialSummary {
   name: string;
@@ -63,21 +62,21 @@ function materialsOf(root: THREE.Object3D): MaterialSummary[] {
 async function gltfDependencies(
   tools: TaskTools,
   request: ToolRequest,
-): Promise<{ items: DependencySummary[]; notes: string[]; declared: DeclaredResourceSummary | null }> {
+): Promise<{ items: DependencySummary[]; notes: string[] }> {
   const notes: string[] = [];
-  if (request.input === null) return { items: [], notes, declared: null };
+  if (request.input === null) return { items: [], notes };
   if (request.input.toLowerCase().endsWith('.glb')) {
     notes.push('GLB 的声明资源由 CLI 只读 JSON chunk 得出（见 resources.declared）');
-    return { items: [], notes, declared: null };
+    return { items: [], notes };
   }
-  if (!request.input.toLowerCase().endsWith('.gltf')) return { items: [], notes, declared: null };
+  if (!request.input.toLowerCase().endsWith('.gltf')) return { items: [], notes };
 
   let text: string;
   try {
     text = await tools.readSibling(baseName(request.input));
   } catch {
     notes.push('无法读取 .gltf 文本，依赖清单未生成。');
-    return { items: [], notes, declared: null };
+    return { items: [], notes };
   }
 
   let json: {
@@ -91,7 +90,7 @@ async function gltfDependencies(
     json = JSON.parse(text) as typeof json;
   } catch (error) {
     notes.push(`.gltf JSON 解析失败：${error instanceof Error ? error.message : String(error)}`);
-    return { items: [], notes, declared: null };
+    return { items: [], notes };
   }
 
   const collect = (list: unknown[] | undefined, kind: 'buffer' | 'image'): DependencySummary[] => {
@@ -126,44 +125,16 @@ async function gltfDependencies(
     }
   }
 
-  let imagesEmbedded = 0;
-  let imagesDataUri = 0;
-  let imagesExternal = 0;
-  let imagesLocalFile = 0;
   let imagesWithoutSource = 0;
   for (const entry of images) {
     const uri = (entry as { uri?: unknown })?.uri;
-    if (typeof uri !== 'string') {
-      if (Number.isInteger((entry as { bufferView?: unknown })?.bufferView)) imagesEmbedded += 1;
-      else imagesWithoutSource += 1;
-    } else if (/^data:/i.test(uri)) imagesDataUri += 1;
-    else if (/^https?:/i.test(uri) || uri.startsWith('//')) imagesExternal += 1;
-    else imagesLocalFile += 1;
+    if (typeof uri !== 'string' && !Number.isInteger((entry as { bufferView?: unknown })?.bufferView)) {
+      imagesWithoutSource += 1;
+    }
   }
   if (imagesWithoutSource > 0) notes.push(`${imagesWithoutSource} 张图片既无 uri 也无 bufferView`);
 
-  const declared: DeclaredResourceSummary = {
-    source: 'gltf-json',
-    images: images.length,
-    textures: Array.isArray(json.textures) ? json.textures.length : null,
-    materials: Array.isArray(json.materials) ? json.materials.length : null,
-    buffers: Array.isArray(json.buffers) ? json.buffers.length : null,
-    animations: Array.isArray(json.animations) ? json.animations.length : null,
-    imagesEmbedded,
-    imagesDataUri,
-    imagesExternal,
-    imagesLocalFile,
-    imagesWithoutSource,
-    // .gltf 的 bufferView 分布在外部 .bin 中，本轮不校验边界。
-    invalidBufferViews: null,
-    mimeTypes: null,
-    notes: [
-      '声明数量来自 .gltf JSON 的 images/textures/materials 数组长度',
-      '外部 bufferView 边界未校验（unknown），只检查同目录文件是否存在',
-    ],
-  };
-
-  return { items, notes, declared };
+  return { items, notes };
 }
 
 export const inspectTask: Task = async (tools: TaskTools, request: ToolRequest) => {
@@ -259,14 +230,7 @@ export const inspectTask: Task = async (tools: TaskTools, request: ToolRequest) 
   }
 
   /* --- 资源账本：声明 / 成功 / 失败 / 未知 分开计数 --- */
-  const declared: DeclaredResourceSummary =
-    asset.format === 'glb'
-      ? (request.declaredResources ??
-        unknownDeclared('CLI 未能解析 GLB JSON chunk，声明资源数量为 unknown'))
-      : asset.format === 'gltf'
-        ? (dependencies.declared ??
-          unknownDeclared('无法读取或解析 .gltf JSON，声明资源数量为 unknown'))
-        : unknownDeclared('USDZ 未逐项枚举资源，声明数量为 unknown');
+  const declared = resolveDeclared(asset.format, request.declaredResources, asset.declared);
   const account = accountResources(asset.loads, declared, usage);
 
   // 声明层清单（.gltf）与运行时请求失败是两件事，分别记录，不混成一个数字。

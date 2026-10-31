@@ -15,7 +15,7 @@ import {
   type LoadedAsset,
   type ModelFormat,
 } from './api';
-import { failureDiagnostics, groupLoadFailures } from './resources';
+import { declaredFromGltfJson, failureDiagnostics, groupLoadFailures, unknownDeclared } from './resources';
 
 const SUPPORTED = new Map<string, ModelFormat>([
   ['.glb', 'glb'],
@@ -114,6 +114,7 @@ export async function loadAssetFromInput(input: string): Promise<LoadedAsset> {
         format,
         loadDiagnostics: diagnostics,
         loads,
+        declared: unknownDeclared('USDZ 未逐项枚举资源，声明数量为 unknown'),
         dispose: () => disposeSubtree(group),
       });
     }
@@ -121,12 +122,14 @@ export async function loadAssetFromInput(input: string): Promise<LoadedAsset> {
     const loader = new GLTFLoader(manager);
     const gltf = await loader.loadAsync(url);
     const clips = gltf.animations ?? [];
+    const parserJson = (gltf as unknown as { parser?: { json?: unknown } }).parser?.json ?? null;
     return finish({
       root: gltf.scene,
       clips,
       format,
       loadDiagnostics: diagnostics,
       loads,
+      declared: declaredFromGltfJson(parserJson, format === 'glb' ? 'glb-json' : 'gltf-json'),
       dispose: () => {
         disposeSubtree(gltf.scene);
         // GLTFLoader 的纹理也可能挂在 parser 上，但 scene 遍历已覆盖实际引用。

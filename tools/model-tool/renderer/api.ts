@@ -58,6 +58,8 @@ export interface LoadedAsset {
   readonly loadDiagnostics: readonly Diagnostic[];
   /** 加载阶段实际发出的请求与失败的请求；用于区分「声明」「成功」「失败」「未知」。 */
   readonly loads: AssetLoadRecord;
+  /** 从加载后的 glTF JSON 得到的声明资源；USDZ 为 unavailable。 */
+  readonly declared: DeclaredResourceSummary;
   dispose(): void;
 }
 

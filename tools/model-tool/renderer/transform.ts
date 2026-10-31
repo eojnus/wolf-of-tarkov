@@ -21,6 +21,13 @@ export interface Vec3Json {
   readonly z: number;
 }
 
+export interface QuaternionJson {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly w: number;
+}
+
 export interface BoneDirectionEntry {
   readonly name: string;
   readonly found: boolean;
@@ -29,6 +36,9 @@ export interface BoneDirectionEntry {
   readonly worldDirection: Vec3Json | null;
   /** 相对角色根世界四元数的方向；同一姿态下应与人物的 yaw 无关。 */
   readonly localDirection: Vec3Json | null;
+  /** 完整骨骼旋转；localQuaternion 相对于角色根，而非骨骼父节点。 */
+  readonly worldQuaternion: QuaternionJson | null;
+  readonly localQuaternion: QuaternionJson | null;
   readonly worldPosition: Vec3Json | null;
   /** 从角色根到该骨骼经过的父级链长度；不在根之下时为 null。 */
   readonly parentDepth: number | null;
@@ -58,6 +68,24 @@ function round2(value: number): number {
 
 function vectorJson(v: THREE.Vector3): Vec3Json {
   return { x: round2(v.x), y: round2(v.y), z: round2(v.z) };
+}
+
+function quaternionJson(q: THREE.Quaternion): QuaternionJson {
+  const digits = 1e8;
+  return {
+    x: Math.round(q.x * digits) / digits,
+    y: Math.round(q.y * digits) / digits,
+    z: Math.round(q.z * digits) / digits,
+    w: Math.round(q.w * digits) / digits,
+  };
+}
+
+function isUsableQuaternion(q: THREE.Quaternion): boolean {
+  return [q.x, q.y, q.z, q.w].every(Number.isFinite) && q.lengthSq() > EPSILON;
+}
+
+function fromQuaternionJson(q: QuaternionJson): THREE.Quaternion {
+  return new THREE.Quaternion(q.x, q.y, q.z, q.w).normalize();
 }
 
 function isFiniteMatrix(matrix: THREE.Matrix4): boolean {
@@ -115,13 +143,16 @@ export function boneWorldDirections(
   } else {
     issues.push('角色根的世界矩阵包含非有限值，局部方向无法换算');
   }
-  const rootQuatInverse = rootQuat.clone().invert();
+  const rootQuatOk = rootMatrixOk && isUsableQuaternion(rootQuat);
+  const rootQuatInverse = rootQuatOk ? rootQuat.clone().normalize().invert() : null;
+  if (!rootQuatOk) issues.push('角色根的世界旋转不可用，完整骨骼姿态无法比较');
 
   const worldQuat = new THREE.Quaternion();
   const objectScale = new THREE.Vector3();
   const objectPosition = new THREE.Vector3();
   const worldDirection = new THREE.Vector3();
   const localDirection = new THREE.Vector3();
+  const localQuat = new THREE.Quaternion();
 
   for (const name of boneNames) {
     const bone = root.getObjectByName(name);
@@ -132,6 +163,8 @@ export function boneWorldDirections(
         axis,
         worldDirection: null,
         localDirection: null,
+        worldQuaternion: null,
+        localQuaternion: null,
         worldPosition: null,
         parentDepth: null,
         reason: '角色根下找不到该名称的骨骼',
@@ -148,6 +181,8 @@ export function boneWorldDirections(
         axis,
         worldDirection: null,
         localDirection: null,
+        worldQuaternion: null,
+        localQuaternion: null,
         worldPosition: null,
         parentDepth: null,
         reason: '该对象不在角色根之下，父子链无法确认',
@@ -163,6 +198,8 @@ export function boneWorldDirections(
         axis,
         worldDirection: null,
         localDirection: null,
+        worldQuaternion: null,
+        localQuaternion: null,
         worldPosition: null,
         parentDepth: depth,
         reason: '骨骼世界矩阵包含非有限值',
@@ -172,6 +209,18 @@ export function boneWorldDirections(
     }
 
     bone.matrixWorld.decompose(objectPosition, worldQuat, objectScale);
+    if (!rootQuatInverse || !isUsableQuaternion(worldQuat)) {
+      bones.push({
+        name, found: true, axis, worldDirection: null, localDirection: null,
+        worldQuaternion: null, localQuaternion: null,
+        worldPosition: vectorJson(objectPosition), parentDepth: depth,
+        reason: '角色根或骨骼的世界旋转不可用',
+      });
+      issues.push(`骨骼 ${name} 的完整旋转无法计算`);
+      continue;
+    }
+    worldQuat.normalize();
+    localQuat.copy(rootQuatInverse).multiply(worldQuat).normalize();
     worldDirection.copy(axisVector).applyQuaternion(worldQuat);
     localDirection.copy(worldDirection).applyQuaternion(rootQuatInverse);
 
@@ -182,6 +231,8 @@ export function boneWorldDirections(
         axis,
         worldDirection: null,
         localDirection: null,
+        worldQuaternion: null,
+        localQuaternion: null,
         worldPosition: vectorJson(objectPosition),
         parentDepth: depth,
         reason: '方向分量非有限',
@@ -197,6 +248,8 @@ export function boneWorldDirections(
         axis,
         worldDirection: null,
         localDirection: null,
+        worldQuaternion: null,
+        localQuaternion: null,
         worldPosition: vectorJson(objectPosition),
         parentDepth: depth,
         reason: '世界四元数退化，方向长度为 0',
@@ -211,6 +264,8 @@ export function boneWorldDirections(
       axis,
       worldDirection: vectorJson(worldDirection),
       localDirection: vectorJson(localDirection),
+      worldQuaternion: quaternionJson(worldQuat),
+      localQuaternion: quaternionJson(localQuat),
       worldPosition: vectorJson(objectPosition),
       parentDepth: depth,
       reason: null,
@@ -230,9 +285,9 @@ export interface YawOrientationSample {
 
 export interface BoneYawDeviation {
   readonly yaw: number;
-  /** 相对 0 号样本局部方向的最大偏差（度）；缺数据为 null。 */
+  /** 相对 0 号样本的完整角色局部旋转偏差（度）；缺数据为 null。 */
   readonly localDeviationDeg: number | null;
-  /** 世界方向与「0 号样本世界方向绕 Y 旋转 yaw 差」的偏差（度）；缺数据为 null。 */
+  /** 世界旋转与「0 号样本世界旋转绕 Y 旋转 yaw 差」的偏差（度）；缺数据为 null。 */
   readonly worldDeviationDeg: number | null;
 }
 
@@ -242,7 +297,7 @@ export interface BoneYawConsistency {
   /** 最大局部偏差（度）；无法判断为 null。 */
   readonly maxLocalDeviationDeg: number | null;
   readonly maxWorldDeviationDeg: number | null;
-  /** 局部方向是否在容差内保持不变；无法判断为 null。 */
+  /** 完整局部旋转是否在容差内保持不变；无法判断为 null。 */
   readonly consistent: boolean | null;
   readonly perYaw: BoneYawDeviation[];
 }
@@ -262,9 +317,9 @@ export interface YawCompareOptions {
 const DEFAULT_TOLERANCE_DEG = 1;
 
 /**
- * 比较同一骨骼在不同 yaw 下的方向。
+ * 比较同一骨骼在不同 yaw 下的完整旋转。
  *
- * 判据：角色局部方向应基本不变（主判据）；世界方向应等于 0 号样本绕 Y 旋转 yaw 差
+ * 判据：角色局部旋转应基本不变（主判据）；世界旋转应等于 0 号样本绕 Y 旋转 yaw 差
  * （副判据，用来确认旋转确实作用在世界空间而不是被骨骼层级吞掉）。
  * 样本不足 2 个或骨骼缺失时返回 null，并把原因写进 issues。
  */
@@ -291,16 +346,12 @@ export function compareYawOrientations(
   }
 
   const bones: BoneYawConsistency[] = [];
-  const baselineWorld = new THREE.Vector3();
-  const sampleLocal = new THREE.Vector3();
-  const sampleWorld = new THREE.Vector3();
-  const expectedWorld = new THREE.Vector3();
   const axisQuat = new THREE.Quaternion();
   const axisY = new THREE.Vector3(0, 1, 0);
 
   for (const name of names) {
     const base = baselineByBone.get(name);
-    if (!base || !base.worldDirection || !base.localDirection) {
+    if (!base || !base.worldQuaternion || !base.localQuaternion) {
       bones.push({
         name,
         axis: base?.axis ?? baseline.directions.axis,
@@ -317,12 +368,8 @@ export function compareYawOrientations(
       continue;
     }
 
-    baselineWorld.set(base.worldDirection.x, base.worldDirection.y, base.worldDirection.z).normalize();
-    const baselineLocal = new THREE.Vector3(
-      base.localDirection.x,
-      base.localDirection.y,
-      base.localDirection.z,
-    ).normalize();
+    const baselineWorld = fromQuaternionJson(base.worldQuaternion);
+    const baselineLocal = fromQuaternionJson(base.localQuaternion);
 
     let maxLocal = 0;
     let maxWorld = 0;
@@ -331,7 +378,7 @@ export function compareYawOrientations(
 
     for (const sample of samples) {
       const entry = sample.directions.bones.find((candidate) => candidate.name === name);
-      if (!entry || !entry.worldDirection || !entry.localDirection) {
+      if (!entry || !entry.worldQuaternion || !entry.localQuaternion) {
         missing = true;
         perYaw.push({
           yaw: round2(sample.yaw),
@@ -342,18 +389,16 @@ export function compareYawOrientations(
         continue;
       }
 
-      sampleLocal.set(entry.localDirection.x, entry.localDirection.y, entry.localDirection.z).normalize();
-      sampleWorld.set(entry.worldDirection.x, entry.worldDirection.y, entry.worldDirection.z).normalize();
-      expectedWorld
-        .copy(baselineWorld)
-        .applyQuaternion(
-          axisQuat.setFromAxisAngle(axisY, THREE.MathUtils.degToRad(sample.yaw - baseline.yaw)),
-        );
+      const sampleLocal = fromQuaternionJson(entry.localQuaternion);
+      const sampleWorld = fromQuaternionJson(entry.worldQuaternion);
+      const expectedWorld = axisQuat
+        .setFromAxisAngle(axisY, THREE.MathUtils.degToRad(sample.yaw - baseline.yaw))
+        .clone().multiply(baselineWorld).normalize();
 
-      const localDeviation = angleBetweenDegrees(baselineLocal, sampleLocal);
-      const worldDeviation = angleBetweenDegrees(expectedWorld, sampleWorld);
-      if (localDeviation !== null) maxLocal = Math.max(maxLocal, localDeviation);
-      if (worldDeviation !== null) maxWorld = Math.max(maxWorld, worldDeviation);
+      const localDeviation = round2(THREE.MathUtils.radToDeg(baselineLocal.angleTo(sampleLocal)));
+      const worldDeviation = round2(THREE.MathUtils.radToDeg(expectedWorld.angleTo(sampleWorld)));
+      maxLocal = Math.max(maxLocal, localDeviation);
+      maxWorld = Math.max(maxWorld, worldDeviation);
       perYaw.push({
         yaw: round2(sample.yaw),
         localDeviationDeg: localDeviation,
@@ -373,8 +418,11 @@ export function compareYawOrientations(
   }
 
   const judged = bones.filter((bone) => bone.consistent !== null);
-  const consistent = judged.length === 0 ? null : judged.every((bone) => bone.consistent === true);
+  const consistent = bones.some((bone) => bone.consistent === false)
+    ? false
+    : judged.length === 0 || judged.length !== bones.length ? null : true;
   if (judged.length === 0) issues.push('没有任何骨骼可以判断朝向一致性');
+  else if (judged.length !== bones.length) issues.push('部分骨骼缺少完整旋转，整体一致性无法确认');
 
   return { toleranceDeg, yaws, bones, consistent, issues };
 }
