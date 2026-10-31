@@ -7,9 +7,22 @@
 
 ## 无头模型工具
 
-`tools/model-tool/` 已可用。先看 `node tools/model-tool/cli.mjs capabilities` 的能力矩阵，快速开始、结果状态（`ok`/`partial`/`error`）、实测范围与限制见 `tools/model-tool/README.md`；命令契约见 `docs/model-tool-architecture.md`，需求讨论见 `docs/model-tools.md`，分工见 `docs/model-tool-work-packages.md`。首次使用前构建工具渲染页：`npm run model-tool:build`。
+`tools/model-tool/` 是供 Agent 使用的无头模型开发工具：检查模型结构和资源、查看材质与动作截图、辅助裁剪动作、报告骨骼映射，以及查看角色与场景碰撞。它输出机器可读 JSON 和必要的 PNG，使用隔离的 Electron 进程，不需要启动正式游戏。
 
-每次执行（除 `capabilities` 与 `--help`）会启动一个独立 Electron 渲染进程，计入当次渲染预算；它不启动也不结束游戏进程，不读写玩家存档与 `src/**`。USDZ 只读、未实现写回；`snapshot` 只采样资产内片段，不代表游戏内程序化动作，也不代表性能或手感验收。
+### 模型任务必须使用
+
+- 凡是涉及模型导入、替换、处理或排查，以及材质、贴图、骨骼、动画、比例、朝向或模型碰撞的任务，**开始时必须调用** `node tools/model-tool/cli.mjs capabilities`，核对工具当前能力。涉及具体模型文件时，使用 `inspect` 检查相关资产，以报告为依据开展后续工作。
+- 根据实际问题选用必要的命令：`snapshot` 查看资产自身动作片段和材质；`snapshot-game-character` 查看游戏角色的程序化动作和朝向；`animation-edit` 辅助裁剪、重命名支持的动作；`retarget` 查看骨骼映射候选；`collision` 或 `collision-snapshot` 查看对应碰撞信息。命令具体参数和限制以工具帮助及 README 为准，不必为与任务无关的能力额外启动进程。
+- 模型修改前先用报告了解现状；需要核对修改结果时，对受影响的资产执行最小范围检查并阅读报告、必要时查看截图。交付时说明实际运行的命令、报告或截图路径、发现的问题及未验证内容。
+- 用户明确限制运行、模型文件不可访问或不受支持、环境阻止启动时，以用户要求和实际环境为准：记录原因及未执行的检查，不伪称工具验证通过。工具不支持的操作可按用户授权使用其他方式，但不得把推测当成工具结果。
+
+### 使用边界
+
+- 首次使用或工具源码更新后需要重新构建渲染页：`npm run model-tool:build`。快速开始、命令参数、结果状态和实测范围见 `tools/model-tool/README.md`；命令契约见 `docs/model-tool-architecture.md`，需求讨论见 `docs/model-tools.md`。
+- 除 `capabilities` 与 `--help` 外，每次命令都会启动一个独立 Electron 工具进程，计入用户规定的进程预算。严格遵守「非必要不测试」和用户对启动次数的限制；工具不会启动或结束正式游戏，也不读写玩家存档或修改 `src/**`。
+- 读取结果时检查顶层 `status`、`diagnostics`、`data.resourceIntegrity` 和资源失败/未知项：`partial` 不能当作完整成功，`unknown` 不能当作零或已验证。贴图加载失败时，截图仅供排查，不能证明材质正确。
+- `snapshot` 只采样资产内动作，不能证明游戏内程序化动作、动作手感或性能；`collision-snapshot` 是隔离世界快照，不是玩家当前会话。USDZ 只读；`retarget` 当前只提供映射报告，不生成可播放的跨模型动作。
+- 输入资产默认只读；导出派生资产须符合用户授权及工具要求，不覆盖原文件。不得为绕过工具限制或权限问题关闭 Electron 安全隔离。模型动作生成应遵循角色局部坐标系，避免随朝向变化而使用固定世界轴导致四肢运动错误。
 
 ## 角色
 
